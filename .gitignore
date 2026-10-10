@@ -1,0 +1,13 @@
+.gradle/
+.kotlin/
+.idea/
+.artifacts/
+.patch-backups/
+**/build/
+local.properties
+*.jks
+*.keystore
+*.iml
+*.zip
+source-validate-debug.txt
+.DS_Store

@@ -1,0 +1,4 @@
+<resources>
+<string name="consent">These recipients agreed to this test. I accept possible SIM charges.</string>
+<string name="permission_status">SMS/phone permission: %1$s • Android %2$s / API %3$d</string>
+</resources>

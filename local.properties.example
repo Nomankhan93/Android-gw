@@ -1,0 +1,6 @@
+# Copy the BULKTEXT_* lines into your local.properties (which stays gitignored),
+# or set the same names in ~/.gradle/gradle.properties / environment variables.
+# Android Studio normally maintains sdk.dir automatically.
+# sdk.dir=C\:\\Users\\YOUR_USER\\AppData\\Local\\Android\\Sdk
+BULKTEXT_SUPABASE_URL=https://YOUR_PROJECT_REF.supabase.co
+BULKTEXT_SUPABASE_ANON_KEY=YOUR_SUPABASE_ANON_KEY

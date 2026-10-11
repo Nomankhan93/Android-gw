@@ -7,8 +7,8 @@ bash scripts/test-queue-core.sh
 bash scripts/test-cloud-execution-core.sh
 bash scripts/test-background-gateway-core.sh
 
-grep -q 'versionName = "0.18.4"' app/build.gradle.kts
-grep -q 'versionCode = 16' app/build.gradle.kts
+grep -q 'versionName = "0.18.5-r1"' app/build.gradle.kts
+grep -q 'versionCode = 18' app/build.gradle.kts
 
 for f in \
   app/src/main/java/com/bulktext/gateway/CloudSendingService.kt \
@@ -27,7 +27,7 @@ grep -q 'CloudSendingService.*foregroundServiceType="remoteMessaging"' app/src/m
 grep -q 'BackgroundGatewayService.*foregroundServiceType="remoteMessaging"' app/src/main/AndroidManifest.xml
 grep -q 'FOREGROUND_SERVICE_REMOTE_MESSAGING' app/src/main/AndroidManifest.xml
 
-grep -q 'SQLiteOpenHelper(context, "cloud_queue.db", null, 6)' app/src/main/java/com/bulktext/gateway/queue/SQLiteCloudQueueStore.kt
+grep -q 'SQLiteOpenHelper(context, "cloud_queue.db", null, 7)' app/src/main/java/com/bulktext/gateway/queue/SQLiteCloudQueueStore.kt
 grep -q 'CREATE TABLE IF NOT EXISTS cloud_attempts' app/src/main/java/com/bulktext/gateway/queue/SQLiteCloudQueueStore.kt
 grep -q 'CREATE TABLE IF NOT EXISTS cloud_attempt_parts' app/src/main/java/com/bulktext/gateway/queue/SQLiteCloudQueueStore.kt
 grep -q 'CREATE TABLE IF NOT EXISTS cloud_callback_outbox' app/src/main/java/com/bulktext/gateway/queue/SQLiteCloudQueueStore.kt
@@ -100,12 +100,12 @@ grep -q 'latestCallbackDiagnostics' app/src/main/java/com/bulktext/gateway/queue
 grep -q 'callbackDiagnostics' app/src/main/java/com/bulktext/gateway/queue/SQLiteCloudQueueStore.kt
 grep -q 'Latest callback diagnostics' app/src/main/java/com/bulktext/gateway/MainActivity.kt
 
-# Certified local-lab transport remains byte-for-byte unchanged.
+# Local-lab transport regression hashes (0.18.5 adds API 35 null-service checks).
 echo 'b738b06173ca61ccb657cea6009c2f37d3b3e8be63b216b5bad15abb819d51b0  app/src/main/java/com/bulktext/gateway/Policy.java' | sha256sum -c -
-echo '6ce9cba6bd7f74aa730dba4af6b9c213e951b54187227159a79f4081c9fddb5f  app/src/main/java/com/bulktext/gateway/Telephony.kt' | sha256sum -c -
-echo '62d8cacc3d52b4b057b58cd922dde2477d5dcab1c9504189f1dc37349f0c4e47  app/src/main/java/com/bulktext/gateway/SendingService.kt' | sha256sum -c -
+echo '351439d241d0785b53c2cab92f578a098acb7ad27773ab999b1205a374597b75  app/src/main/java/com/bulktext/gateway/Telephony.kt' | sha256sum -c -
+echo 'a07e6e1fd4c0fec40ca5a3bf871980235624d360485db2d9d8fa1af12c29814b  app/src/main/java/com/bulktext/gateway/SendingService.kt' | sha256sum -c -
 echo 'f8d9a9335b23db7d86240363eb88cf5c9a3b890941f0f88eddd5f3420c108476  app/src/main/java/com/bulktext/gateway/SmsResultReceiver.kt' | sha256sum -c -
 echo 'a37c855fcba7df3b172b82cf77700a6c9a27d132d26612bf5193e826b4b63a69  app/src/main/java/com/bulktext/gateway/Store.kt' | sha256sum -c -
 
 sha256sum -c SHA256SUMS.txt >/dev/null
-echo 'PASS: BulkText Android 0.18.4 source validation'
+echo 'PASS: BulkText Android 0.18.5-r1 source validation'

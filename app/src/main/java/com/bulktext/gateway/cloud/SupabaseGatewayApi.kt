@@ -15,7 +15,8 @@ import java.util.UUID
 
 class SupabaseGatewayApi(
     private val supabaseUrl: String = BuildConfig.SUPABASE_URL,
-    private val supabaseKey: String = BuildConfig.SUPABASE_ANON_KEY
+    private val supabaseKey: String = BuildConfig.SUPABASE_ANON_KEY,
+    private val connectionFactory: (URL) -> HttpURLConnection = { it.openConnection() as HttpURLConnection }
 ) : GatewayApi, GatewayInventoryApi, GatewayQueueApi, GatewayDeliveryApi {
 
     @Throws(CloudException::class)
@@ -84,7 +85,21 @@ class SupabaseGatewayApi(
             put("p_client_attempt_id", clientAttemptId)
             put("p_expected_parts", expectedParts)
         }
-        return parseAttemptStart(parseSingleRowResult(postRpc("begin_gateway_message_attempt", payload)))
+        val data = parseObjectResult(postRpc("begin_gateway_message_attempt_v2", payload))
+        return parseBeginV2(data, clientAttemptId)
+    }
+
+    internal fun parseBeginV2(data: JSONObject, clientAttemptId: String): GatewayAttemptStart {
+        if (data.optString("outcome") == "blocked") {
+            if (data.getBoolean("can_submit")) throw CloudException.ServerContractException("Invalid blocked response")
+            return GatewayAttemptStart("", clientAttemptId, 0, "blocked", false, 0,
+                "blocked", false, requireString(data, "code", "Blocked attempt"))
+        }
+        if (data.optString("outcome") != "registered") throw CloudException.ServerContractException("Unknown begin outcome")
+        val result = parseAttemptStart(data).copy(canSubmit = data.getBoolean("can_submit"))
+        if (result.clientAttemptId != clientAttemptId || (result.canSubmit && result.state != "prepared"))
+            throw CloudException.ServerContractException("Invalid attempt grant")
+        return result
     }
 
     @Throws(CloudException::class)
@@ -93,7 +108,12 @@ class SupabaseGatewayApi(
         credential: String,
         event: GatewayAttemptEvent
     ): GatewayAttemptReport {
-        val payload = JSONObject().apply {
+        val data = parseObjectResult(postRpc("report_gateway_message_attempt_event_v2", buildEventPayload(deviceId, credential, event)))
+        return parseReportV2(data, event)
+    }
+
+    internal fun buildEventPayload(deviceId: String, credential: String, event: GatewayAttemptEvent): JSONObject =
+        JSONObject().apply {
             put("p_device_id", deviceId)
             put("p_credential", credential)
             put("p_event_id", event.eventId)
@@ -102,8 +122,19 @@ class SupabaseGatewayApi(
             putOptional("p_part_index", event.partIndex)
             putOptional("p_result_code", event.resultCode)
             put("p_occurred_at_ms", event.occurredAtMillis)
+            putOptional("p_delivery_format", event.deliveryFormat)
+            putOptional("p_delivery_status", event.deliveryStatus)
+            putOptional("p_delivery_pdu_sha256", event.deliveryPduSha256)
         }
-        return parseAttemptReport(parseSingleRowResult(postRpc("report_gateway_message_attempt_event", payload)))
+
+    internal fun parseReportV2(data: JSONObject, event: GatewayAttemptEvent): GatewayAttemptReport {
+        val outcome = data.optString("outcome")
+        if (outcome == "tombstoned" || (outcome == "rejected" && data.optString("reason") == "attempt_unavailable"))
+            return GatewayAttemptReport("", event.clientAttemptId, 0, "unknown", false, 0, 0, 0, outcome)
+        if (outcome !in setOf("accepted", "duplicate", "conflict")) throw CloudException.ServerContractException("Unknown callback disposition")
+        val report = parseAttemptReport(data)
+        if (report.clientAttemptId != event.clientAttemptId) throw CloudException.ServerContractException("Callback identity mismatch")
+        return report.copy(outcome = outcome, conflict = data.optBoolean("conflict") || outcome == "conflict", resolved = !data.isNull("resolved_at"))
     }
 
     @Throws(CloudException::class)
@@ -117,15 +148,22 @@ class SupabaseGatewayApi(
     }
 
     @Throws(CloudException::class)
-    override fun acknowledgeGatewayMessageRecovery(deviceId: String, credential: String, recoveryId: String): Boolean {
+    override fun acknowledgeGatewayMessageRecovery(deviceId: String, credential: String, recoveryId: String, outcome: String): Boolean {
         val payload = JSONObject().apply {
             put("p_device_id", deviceId)
             put("p_credential", credential)
             put("p_recovery_id", recoveryId)
+            require(outcome in setOf("applied", "not_applicable", "rejected"))
+            put("p_outcome", outcome)
         }
-        val trimmed = postRpc("acknowledge_gateway_message_recovery", payload).trim().trim('"')
-        if (trimmed != "true" && trimmed != "false") throw CloudException.ServerContractException("Recovery ACK response is not boolean")
-        return trimmed == "true"
+        val data = parseObjectResult(postRpc("acknowledge_gateway_message_recovery_v2", payload))
+        return parseRecoveryAckV2(data)
+    }
+
+    internal fun parseRecoveryAckV2(data: JSONObject): Boolean {
+        if (data.optString("outcome") !in setOf("applied", "superseded", "rejected") || !data.optBoolean("terminal"))
+            throw CloudException.ServerContractException("Nonterminal recovery ACK")
+        return true
     }
 
     internal fun buildInventoryPayload(deviceId: String, credential: String, inventory: DeviceInventorySnapshot): JSONObject =
@@ -326,6 +364,21 @@ class SupabaseGatewayApi(
         })
     }
 
+    /** Scalar jsonb RPCs return an object, not a table row array. Legacy table RPCs stay strict. */
+    internal fun parseObjectResult(responseBody: String): JSONObject {
+        val text = responseBody.trim()
+        if (!text.startsWith("{")) throw CloudException.ServerContractException("Expected JSON object from v2 RPC")
+        return try {
+            val reader = org.json.JSONTokener(text)
+            val value = reader.nextValue()
+            if (value !is JSONObject || reader.nextClean() != '\u0000')
+                throw CloudException.ServerContractException("Invalid v2 response object")
+            value
+        } catch (_: Exception) {
+            throw CloudException.ServerContractException("Invalid v2 response object")
+        }
+    }
+
     fun parseSingleRowResult(responseBody: String): JSONObject {
         val trimmed = responseBody.trim()
         if (!trimmed.startsWith("[")) throw CloudException.ServerContractException("Unexpected response format: expected a single-row JSON array")
@@ -409,7 +462,7 @@ class SupabaseGatewayApi(
         val baseUrl = supabaseUrl.trim().trimEnd('/')
         val url = URL("$baseUrl/rest/v1/rpc/$endpointName")
         val conn = try {
-            (url.openConnection() as HttpURLConnection).apply {
+            connectionFactory(url).apply {
                 requestMethod = "POST"
                 setRequestProperty("Content-Type", "application/json")
                 setRequestProperty("Accept", "application/json")

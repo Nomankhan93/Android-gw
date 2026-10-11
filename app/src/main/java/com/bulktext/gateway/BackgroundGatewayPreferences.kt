@@ -67,6 +67,28 @@ class BackgroundGatewayPreferences(context: Context) {
         prefs.edit().putLong(KEY_LAST_RECOVERY_SYNC_AT, at).apply()
     }
 
+    // Per-device, per-operation state: successful queue polling cannot erase callback/RPC errors.
+    @Synchronized
+    fun recordOperation(deviceId: String, operation: String, error: Exception? = null, at: Long = System.currentTimeMillis()) {
+        require(operation in listOf("begin", "callbacks", "recovery"))
+        val key = "operation.$deviceId.$operation"
+        val edit = prefs.edit().putLong("$key.attempt", at)
+        if (error == null) edit.remove("$key.error").putLong("$key.success", at)
+        else edit.putString("$key.error", when (error) {
+            is com.bulktext.gateway.cloud.CloudException.NetworkException -> "Network unavailable; retry pending"
+            is com.bulktext.gateway.cloud.CloudException.CredentialRejectedException -> "Gateway credential rejected"
+            is com.bulktext.gateway.cloud.CloudException.ServerContractException -> "Server response incompatible; update required"
+            else -> "Operation failed; retry pending"
+        })
+        edit.apply()
+    }
+
+    fun operationError(deviceId: String, operation: String): String? = prefs.getString("operation.$deviceId.$operation.error", null)
+    fun operationSuccessAt(deviceId: String, operation: String): Long = prefs.getLong("operation.$deviceId.$operation.success", 0L)
+    fun operationErrors(deviceId: String): String = listOf("begin", "callbacks", "recovery").mapNotNull { op ->
+        operationError(deviceId, op)?.let { "$op: $it" }
+    }.joinToString("\n")
+
     companion object {
         private const val KEY_SEND_GENERATION = "send_generation"
         private const val KEY_ENABLED = "enabled"

@@ -86,7 +86,7 @@ class MainActivity : Activity() {
 
         text("BULKTEXT  /  ANDROID LAB", 14).setTextColor(Color.rgb(8, 127, 140))
         text("Test your SIM gateway", 28)
-        text("0.18.3 • Persistent Background Sync + Callback Diagnostics\nEnable the background gateway once. Queue/callback/recovery sync remains active through UNKNOWN, raw callback resultCode/errorCode evidence is retained per part, and UNKNOWN is never automatically resent. Exact-SIM checks remain mandatory before every SMS.", 15)
+        text("${BuildConfig.VERSION_NAME} • Recovery, Outbox & Delivery Reliability\nEnable the background gateway once. Queue/callback/recovery sync remains active through UNKNOWN, raw callback resultCode/errorCode evidence is retained per part, and UNKNOWN is never automatically resent. Exact-SIM checks remain mandatory before every SMS.", 15)
 
         // --- Gateway Cloud Pairing Section ---
         text("Cloud Gateway Identity", 20)
@@ -475,7 +475,16 @@ class MainActivity : Activity() {
         if (!::cloudQueueStatus.isInitialized) return
         fun countsText(counts: com.bulktext.gateway.queue.CloudQueueCounts): String {
             val last = counts.latestSyncAt?.let { DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.MEDIUM).format(Date(it)) } ?: "never"
-            return "Persisted jobs: ${counts.persistedJobs} • Unacknowledged: ${counts.unacknowledgedJobs} • ACKed: ${counts.acknowledgedJobs}\nLast sync: $last"
+            return "Persisted jobs: ${counts.persistedJobs} • Unacknowledged: ${counts.unacknowledgedJobs} • ACKed: ${counts.acknowledgedJobs}\nLast successful queue sync: $last"
+        }
+        val health = app.secureCredentialStore.getDeviceId()?.let { app.cloudQueueStore.syncHealth(it) }
+        if (health?.second != null) {
+            val attempted = health.first?.let { DateFormat.getDateTimeInstance().format(Date(it)) } ?: "not recorded"
+            cloudQueueStatus.text = "Cloud needs attention: ${health.second}\nLast attempt: $attempted\n${countsText(cloudQueueRepo.countsForCurrentDevice())}"
+            cloudQueueStatus.setTextColor(Color.RED)
+            pairingStatus.text = "Status: Paired · cloud connection needs attention"
+            pairingStatus.setTextColor(Color.RED)
+            return
         }
         when (val state = cloudQueueState) {
             CloudQueueState.NotSynced -> {
@@ -494,7 +503,7 @@ class MainActivity : Activity() {
             }
             is CloudQueueState.Ready -> {
                 val execution = (currentState as? GatewayIdentityState.Paired)?.let { app.cloudQueueStore.executionCounts(it.deviceId) }
-                val executionText = execution?.let { "Execution: Ready ${it.ready} • Submitting ${it.submitting} • Submitted ${it.submitted} • UNKNOWN ${it.unknown}" } ?: "Execution: unavailable until paired"
+                val executionText = execution?.let { "Execution: Ready ${it.ready} • Submitting ${it.submitting} • Prepared ${it.prepared} • Submitted ${it.submitted} • UNKNOWN ${it.unknown} • Blocked ${it.blocked}" } ?: "Execution: unavailable until paired"
                 cloudQueueStatus.text = "Cloud Queue status: Ready\nClaimed this sync: ${state.claimedJobs} • ACKed this sync: ${state.acknowledgedThisSync}\n${countsText(state.counts)}\n$executionText"
                 cloudQueueStatus.setTextColor(Color.rgb(0, 128, 0))
             }
@@ -583,6 +592,12 @@ class MainActivity : Activity() {
                 backgroundGatewayStatus.setTextColor(Color.RED)
                 backgroundGatewayButton.text = "Disable background gateway"
             }
+            app.secureCredentialStore.getDeviceId()?.let { prefs.operationErrors(it).isNotEmpty() } == true -> {
+                val device = app.secureCredentialStore.getDeviceId()!!
+                backgroundGatewayStatus.text = "Background gateway: NEEDS ATTENTION\n${prefs.operationErrors(device)}\n${backgroundSyncHealthText(prefs)}"
+                backgroundGatewayStatus.setTextColor(Color.RED)
+                backgroundGatewayButton.text = "Disable background gateway"
+            }
             else -> {
                 val activated = if (prefs.activatedAt() > 0L) DateFormat.getDateTimeInstance().format(Date(prefs.activatedAt())) else "unknown"
                 backgroundGatewayStatus.text = "Background gateway: ACTIVE\nActivated $activated\n${prefs.lastStatus() ?: "Waiting for Web-authorized campaigns."}\n${backgroundSyncHealthText(prefs)}"
@@ -594,7 +609,8 @@ class MainActivity : Activity() {
 
     private fun backgroundSyncHealthText(prefs: BackgroundGatewayPreferences): String {
         fun stamp(value: Long): String = if (value > 0L) DateFormat.getDateTimeInstance().format(Date(value)) else "not yet"
-        return "Control cycle: ${stamp(prefs.lastControlCycleAt())} • Callback flush: ${stamp(prefs.lastCallbackFlushAt())} • Recovery sync: ${stamp(prefs.lastRecoverySyncAt())}"
+        val device = app.secureCredentialStore.getDeviceId() ?: return "Pair this phone to view sync health"
+        return "Control cycle: ${stamp(prefs.lastControlCycleAt())} • Callback sync success: ${stamp(prefs.operationSuccessAt(device, "callbacks"))} • Recovery sync success: ${stamp(prefs.operationSuccessAt(device, "recovery"))}"
     }
 
     private fun previewCloudCampaignSend() {
@@ -653,13 +669,15 @@ class MainActivity : Activity() {
         val counts = app.cloudQueueStore.executionCounts(paired.deviceId)
         val backgroundActive = app.backgroundGatewayPreferences.isEnabled() && app.backgroundGatewayPreferences.pausedReason() == null
         cloudExecutionStatus.text =
-            "Cloud execution • Ready ${counts.ready} • Submitting ${counts.submitting} • Submitted ${counts.submitted} • Sent ${counts.sent} • Delivered ${counts.delivered} • Failed ${counts.failed} • UNKNOWN ${counts.unknown}\n" +
+            "Cloud execution (all campaigns) • Ready ${counts.ready} • Submitting ${counts.submitting} • Prepared ${counts.prepared} • Submitted ${counts.submitted} • Sent ${counts.sent} • Delivered ${counts.delivered} • Failed ${counts.failed} • UNKNOWN ${counts.unknown} • Blocked ${counts.blocked}\n" +
                 if (backgroundActive) {
                     "Background gateway is active. SENT/DELIVERED callbacks and recovery events sync automatically. UNKNOWN pauses sending but the gateway stays online for explicit Web recovery."
                 } else {
                     "Background gateway is not active. Manual/recovery execution can process up to ${com.bulktext.gateway.queue.CloudExecutionPolicy.MAX_BATCH_JOBS} READY jobs. UNKNOWN blocks further sending."
                 }
-        cloudExecutionStatus.setTextColor(if (counts.unknown > 0) Color.RED else Color.rgb(0, 128, 0))
+        val errors = app.backgroundGatewayPreferences.operationErrors(paired.deviceId)
+        if (errors.isNotEmpty()) cloudExecutionStatus.append("\nCloud sync needs attention:\n$errors")
+        cloudExecutionStatus.setTextColor(if (counts.unknown > 0 || errors.isNotEmpty()) Color.RED else Color.rgb(0, 128, 0))
         if (::cloudCallbackDiagnosticsStatus.isInitialized) {
             val diagnostics = app.cloudQueueStore.latestCallbackDiagnostics(paired.deviceId, 6)
             cloudCallbackDiagnosticsStatus.text = if (diagnostics.isEmpty()) {
@@ -695,7 +713,7 @@ class MainActivity : Activity() {
                 pairBtn.isEnabled = false
             }
             is GatewayIdentityState.Paired -> {
-                pairingStatus.text = "Status: Paired & Valid\nDevice: ${s.deviceName} • ID: ${s.deviceId.take(8)}…"
+                pairingStatus.text = "Status: Paired (cloud sync status below)\nDevice: ${s.deviceName} • ID: ${s.deviceId.take(8)}…"
                 pairingStatus.setTextColor(Color.rgb(0, 128, 0))
                 pairingCodeInput.visibility = View.GONE
                 pairBtn.isEnabled = false
@@ -855,7 +873,7 @@ class MainActivity : Activity() {
             val uri = data?.data ?: error("No export location")
             val stream = contentResolver.openOutputStream(uri) ?: error("Unable to open export")
             val combined = JSONObject()
-                .put("version", "0.18.3")
+                .put("version", BuildConfig.VERSION_NAME)
                 .put("exportedAt", System.currentTimeMillis())
                 .put("localSmsLab", JSONObject(store.export()))
                 .put("cloudQueue", JSONObject(cloudQueueRepo.diagnosticsForCurrentDevice()))

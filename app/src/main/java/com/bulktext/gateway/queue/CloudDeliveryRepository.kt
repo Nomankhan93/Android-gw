@@ -8,11 +8,29 @@ import com.bulktext.gateway.identity.CredentialStore
 class CloudDeliveryRepository(
     private val credentialStore: CredentialStore,
     private val api: GatewayDeliveryApi,
-    private val localStore: SQLiteCloudQueueStore
+    private val localStore: SQLiteCloudQueueStore,
+    private val health: com.bulktext.gateway.BackgroundGatewayPreferences? = null
 ) {
-    fun beginAttempt(jobId: String, localAttempt: LocalCloudAttempt): GatewayAttemptStart {
+    fun beginAttempt(jobId: String, localAttempt: LocalCloudAttempt): GatewayAttemptStart = tracked("begin") { beginAttemptInternal(jobId, localAttempt) }
+    fun flushEvents(limit: Int = 25): Int = tracked("callbacks") { flushEventsInternal(limit) }
+    fun syncRecoveryRequests(limit: Int = 25): Int = tracked("recovery") { syncRecoveryRequestsInternal(limit) }
+
+    private fun <T> tracked(operation: String, action: () -> T): T {
+        val device = credentialStore.getDeviceId()
+        try {
+            val result = action()
+            if (device != null) health?.recordOperation(device, operation)
+            return result
+        } catch (e: Exception) {
+            if (device != null) health?.recordOperation(device, operation, e)
+            throw e
+        }
+    }
+
+    private fun beginAttemptInternal(jobId: String, localAttempt: LocalCloudAttempt): GatewayAttemptStart {
         val deviceId = credentialStore.getDeviceId() ?: throw IllegalStateException("Pair this phone before SMS execution.")
         val credential = credentialStore.getCredential() ?: throw IllegalStateException("Gateway credential is unavailable.")
+        require(localStore.getExecutable(deviceId, jobId) != null) { "Attempt owner mismatch" }
         val started = api.beginGatewayMessageAttempt(
             deviceId,
             credential,
@@ -20,23 +38,25 @@ class CloudDeliveryRepository(
             localAttempt.clientAttemptId,
             localAttempt.expectedParts
         )
+        require(localStore.getExecutable(deviceId, jobId) != null) { "Attempt belongs to another gateway identity" }
+        if (started.outcome == "blocked" || !started.canSubmit) {
+            localStore.blockBeforeSubmission(deviceId, jobId, started.blockCode ?: "attempt_not_prepared")
+            return started
+        }
         require(started.clientAttemptId == localAttempt.clientAttemptId) { "Server attempt identifier mismatch" }
         localStore.bindServerAttempt(localAttempt.clientAttemptId, started.attemptNumber)
         return started
     }
 
-    fun flushEvents(limit: Int = 25): Int {
+    private fun flushEventsInternal(limit: Int = 25): Int {
         val deviceId = credentialStore.getDeviceId() ?: return 0
         val credential = credentialStore.getCredential() ?: return 0
         var synced = 0
-        for (pending in localStore.pendingAttemptEvents(limit.coerceIn(1, 25))) {
+        for (pending in localStore.pendingAttemptEvents(deviceId, limit.coerceIn(1, 25))) {
             try {
-                api.reportGatewayMessageAttemptEvent(deviceId, credential, pending.event)
-                localStore.markAttemptEventSynced(pending.event.eventId)
+                val report = api.reportGatewayMessageAttemptEvent(deviceId, credential, pending.event)
+                localStore.completeReport(pending.event.eventId, report)
                 synced += 1
-            } catch (_: CloudException.NetworkException) {
-                localStore.noteAttemptEventSyncFailure(pending.event.eventId)
-                break
             } catch (e: Exception) {
                 localStore.noteAttemptEventSyncFailure(pending.event.eventId)
                 throw e
@@ -45,19 +65,23 @@ class CloudDeliveryRepository(
         return synced
     }
 
-    fun syncRecoveryRequests(limit: Int = 25): Int {
+    private fun syncRecoveryRequestsInternal(limit: Int = 25): Int {
         val deviceId = credentialStore.getDeviceId() ?: return 0
         val credential = credentialStore.getCredential() ?: return 0
+        var acknowledged = flushRecoveryAcks(deviceId, credential)
         val requests = api.listGatewayMessageRecoveryRequests(deviceId, credential, limit.coerceIn(1, 25))
-        var applied = 0
-        for (request in requests) {
-            val local = localStore.applyRecoveryRequest(deviceId, request)
-            if (local == RecoveryApplyResult.NOT_APPLICABLE) continue
-            // APPLIED / ALREADY_APPLIED and 0.18.1 REJECTED_UNSAFE are all
-            // terminal locally and can be ACKed so obsolete requests do not loop.
-            api.acknowledgeGatewayMessageRecovery(deviceId, credential, request.recoveryId)
-            applied += 1
+        for (request in requests) localStore.applyRecoveryRequest(deviceId, request)
+        acknowledged += flushRecoveryAcks(deviceId, credential)
+        return acknowledged
+    }
+
+    private fun flushRecoveryAcks(deviceId: String, credential: String): Int {
+        var count = 0
+        for ((id, outcome) in localStore.pendingRecoveryAcks(deviceId)) {
+            if (api.acknowledgeGatewayMessageRecovery(deviceId, credential, id, outcome)) {
+                localStore.markRecoveryAcked(deviceId, id); count++
+            }
         }
-        return applied
+        return count
     }
 }

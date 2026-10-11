@@ -28,6 +28,7 @@ interface GatewayDeliveryApi {
     fun acknowledgeGatewayMessageRecovery(
         deviceId: String,
         credential: String,
-        recoveryId: String
+        recoveryId: String,
+        outcome: String = "applied"
     ): Boolean
 }

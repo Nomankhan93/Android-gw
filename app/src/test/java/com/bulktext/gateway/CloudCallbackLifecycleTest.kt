@@ -68,7 +68,7 @@ class CloudCallbackLifecycleTest {
     @Test fun sentSuccessSurvivesGoAsyncAndRemainsInOutbox() {
         val event = callback(Activity.RESULT_OK)
         assertEquals("SENT", app.cloudQueueStore.currentAttemptOutcome(attemptId)?.state)
-        assertEquals(-1, app.cloudQueueStore.pendingAttemptEvents().single { it.event.eventId == event }.event.resultCode)
+        assertEquals(-1, app.cloudQueueStore.pendingAttemptEvents(deviceId).single { it.event.eventType == "sent" }.event.resultCode)
     }
 
     @Test fun realFailureAndPlatformErrorCodeArePreservedWithoutRetry() {
@@ -76,7 +76,7 @@ class CloudCallbackLifecycleTest {
         val outcome = app.cloudQueueStore.currentAttemptOutcome(attemptId)!!
         assertEquals("UNKNOWN", outcome.state)
         assertFalse(outcome.safeRetryEligible)
-        assertEquals(1, app.cloudQueueStore.pendingAttemptEvents().single { it.event.eventId == event }.event.resultCode)
+        assertEquals(1, app.cloudQueueStore.pendingAttemptEvents(deviceId).single { it.event.eventType == "sent" }.event.resultCode)
         assertEquals(42, app.cloudQueueStore.latestCallbackDiagnostics(deviceId).first().errorCode)
     }
 
@@ -84,7 +84,7 @@ class CloudCallbackLifecycleTest {
         callback(Activity.RESULT_OK)
         val event = callback(Activity.RESULT_OK, kind = "delivery")
         assertEquals("SENT", app.cloudQueueStore.currentAttemptOutcome(attemptId)?.state)
-        assertFalse(app.cloudQueueStore.pendingAttemptEvents().any { it.event.eventId == event })
+        assertTrue(app.cloudQueueStore.pendingAttemptEvents(deviceId).any { it.event.eventType == "delivery" && it.event.deliveryStatus == null })
         assertEquals(-1, app.cloudQueueStore.latestCallbackDiagnostics(deviceId).first { it.kind == "delivery" }.resultCode)
     }
 
@@ -107,7 +107,7 @@ class CloudCallbackLifecycleTest {
     @Test fun callbackSyncCanBeScheduledWhileSendingIsDisabled() {
         app.backgroundGatewayPreferences.disable()
         CallbackSyncService.schedule(app)
-        val job = app.getSystemService(android.app.job.JobScheduler::class.java).allPendingJobs.single { it.id == 184 }
+        val job = requireNotNull(app.getSystemService(android.app.job.JobScheduler::class.java)).allPendingJobs.single { it.id == 184 }
         assertTrue(job.isPersisted)
         assertEquals(android.app.job.JobInfo.NETWORK_TYPE_ANY, job.networkType)
         assertEquals(CallbackSyncService::class.java.name, job.service.className)

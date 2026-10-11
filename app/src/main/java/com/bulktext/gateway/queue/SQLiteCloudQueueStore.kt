@@ -23,7 +23,7 @@ import java.util.UUID
  * records callback truth in outcome_state. This avoids rewriting the queue table
  * while preserving the irreversible SmsManager boundary from 0.17.x.
  */
-class SQLiteCloudQueueStore(context: Context) : SQLiteOpenHelper(context, "cloud_queue.db", null, 6), CloudQueueLocalStore, CloudExecutionStore {
+class SQLiteCloudQueueStore(context: Context) : SQLiteOpenHelper(context, "cloud_queue.db", null, 7), CloudQueueLocalStore, CloudExecutionStore {
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL(
             """
@@ -71,6 +71,7 @@ class SQLiteCloudQueueStore(context: Context) : SQLiteOpenHelper(context, "cloud
         db.execSQL("CREATE TABLE queue_sync_meta(device_id TEXT PRIMARY KEY, last_sync_at INTEGER, last_error TEXT)")
         createAttemptTables(db)
         createDiagnosticTables(db)
+        upgradeContract7(db)
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
@@ -139,7 +140,31 @@ class SQLiteCloudQueueStore(context: Context) : SQLiteOpenHelper(context, "cloud
             db.execSQL("ALTER TABLE cloud_attempt_diagnostics ADD COLUMN error_code INTEGER")
             version = 6
         }
+        if (version == 6 && newVersion >= 7) { upgradeContract7(db); version = 7 }
         if (version != newVersion) throw IllegalStateException("Unsupported cloud queue database upgrade $oldVersion->$newVersion")
+    }
+
+    private fun upgradeContract7(db: SQLiteDatabase) {
+        db.execSQL("ALTER TABLE cloud_attempts ADD COLUMN conflict_latched INTEGER NOT NULL DEFAULT 0")
+        db.execSQL("ALTER TABLE queue_sync_meta ADD COLUMN last_attempt_at INTEGER")
+        db.execSQL("UPDATE queue_sync_meta SET last_attempt_at=last_sync_at")
+        db.execSQL("UPDATE queue_sync_meta SET last_sync_at=NULL WHERE last_error IS NOT NULL")
+        db.execSQL("ALTER TABLE cloud_jobs ADD COLUMN block_code TEXT")
+        db.execSQL("ALTER TABLE cloud_jobs ADD COLUMN block_retry_at INTEGER NOT NULL DEFAULT 0")
+        db.execSQL("ALTER TABLE cloud_callback_outbox ADD COLUMN delivery_format TEXT")
+        db.execSQL("ALTER TABLE cloud_callback_outbox ADD COLUMN delivery_status INTEGER")
+        db.execSQL("ALTER TABLE cloud_callback_outbox ADD COLUMN delivery_sha256 TEXT")
+        db.execSQL("ALTER TABLE cloud_callback_outbox ADD COLUMN disposition TEXT")
+        db.execSQL("ALTER TABLE cloud_callback_outbox ADD COLUMN device_id TEXT")
+        db.execSQL("UPDATE cloud_callback_outbox SET device_id=(SELECT j.device_id FROM cloud_attempts a JOIN cloud_jobs j ON j.job_id=a.job_id WHERE a.client_attempt_id=cloud_callback_outbox.client_attempt_id)")
+        db.execSQL("CREATE TABLE recovery_ack_outbox(recovery_id TEXT PRIMARY KEY,device_id TEXT NOT NULL,outcome TEXT NOT NULL CHECK(outcome IN ('applied','not_applicable','rejected')),acked_at INTEGER)")
+        db.execSQL("INSERT INTO recovery_ack_outbox SELECT r.recovery_id,j.device_id,CASE WHEN r.action='safe_retry' THEN 'rejected' ELSE 'applied' END,NULL FROM cloud_recovery_applied r JOIN cloud_jobs j ON j.job_id=r.job_id")
+        db.execSQL("UPDATE cloud_attempts SET conflict_latched=1 WHERE note LIKE 'Conflicting%'")
+        // Old callbacks did not persist status-report evidence. Retain observations,
+        // but require new complete evidence before making a delivery claim.
+        db.execSQL("UPDATE cloud_attempt_parts SET delivery_state='PENDING' WHERE delivery_state='DELIVERED'")
+        db.execSQL("UPDATE cloud_attempts SET state='SENT' WHERE state='DELIVERED'")
+        db.execSQL("UPDATE cloud_jobs SET outcome_state='SENT' WHERE outcome_state='DELIVERED'")
     }
 
     private fun createAttemptTables(db: SQLiteDatabase) {
@@ -295,8 +320,14 @@ class SQLiteCloudQueueStore(context: Context) : SQLiteOpenHelper(context, "cloud
 
     @Synchronized
     override fun recordSync(deviceId: String, atMillis: Long, error: String?) {
-        val v = ContentValues().apply { put("device_id", deviceId); put("last_sync_at", atMillis); if (error == null) putNull("last_error") else put("last_error", error.take(300)) }
-        writableDatabase.insertWithOnConflict("queue_sync_meta", null, v, SQLiteDatabase.CONFLICT_REPLACE)
+        val db = writableDatabase
+        db.execSQL("INSERT OR IGNORE INTO queue_sync_meta(device_id) VALUES(?)", arrayOf(deviceId))
+        val v = ContentValues().apply { put("last_attempt_at", atMillis); if (error == null) { put("last_sync_at", atMillis); putNull("last_error") } else put("last_error", error.take(300)) }
+        db.update("queue_sync_meta", v, "device_id=?", arrayOf(deviceId))
+    }
+
+    fun syncHealth(deviceId: String): Pair<Long?,String?> = readableDatabase.rawQuery("SELECT last_attempt_at,last_error FROM queue_sync_meta WHERE device_id=?", arrayOf(deviceId)).use { c ->
+        if(c.moveToFirst()) (if(c.isNull(0)) null else c.getLong(0)) to (if(c.isNull(1)) null else c.getString(1)) else null to null
     }
 
     @Synchronized
@@ -398,10 +429,10 @@ class SQLiteCloudQueueStore(context: Context) : SQLiteOpenHelper(context, "cloud
         c.getString(0) to CloudJobReconciler.StoredShape(stored, c.getString(16) == "ACKED")
     }
 
-    @Synchronized override fun nextReady(deviceId: String): CloudExecutableJob? = queryExecutable("device_id=? AND ack_state='ACKED' AND execution_state='READY'", arrayOf(deviceId))
-    @Synchronized override fun nextReadySince(deviceId: String, notBeforeMillis: Long): CloudExecutableJob? = queryExecutable("device_id=? AND ack_state='ACKED' AND execution_state='READY' AND (persisted_at>=? OR retry_ready_at>=?)", arrayOf(deviceId, notBeforeMillis.toString(), notBeforeMillis.toString()))
-    @Synchronized override fun nextReadyForCampaign(deviceId: String, campaignId: String): CloudExecutableJob? = queryExecutable("device_id=? AND campaign_id=? AND ack_state='ACKED' AND execution_state='READY'", arrayOf(deviceId, campaignId))
-    @Synchronized override fun nextReadyForCampaignSince(deviceId: String, campaignId: String, notBeforeMillis: Long): CloudExecutableJob? = queryExecutable("device_id=? AND campaign_id=? AND ack_state='ACKED' AND execution_state='READY' AND (persisted_at>=? OR retry_ready_at>=?)", arrayOf(deviceId, campaignId, notBeforeMillis.toString(), notBeforeMillis.toString()))
+    @Synchronized override fun nextReady(deviceId: String): CloudExecutableJob? = queryExecutable("device_id=? AND ack_state='ACKED' AND execution_state='READY' AND (block_code IS NULL OR (block_code='sim_gate' AND block_retry_at<=strftime('%s','now')*1000))", arrayOf(deviceId))
+    @Synchronized override fun nextReadySince(deviceId: String, notBeforeMillis: Long): CloudExecutableJob? = queryExecutable("device_id=? AND ack_state='ACKED' AND execution_state='READY' AND (block_code IS NULL OR (block_code='sim_gate' AND block_retry_at<=strftime('%s','now')*1000)) AND (persisted_at>=? OR retry_ready_at>=?)", arrayOf(deviceId, notBeforeMillis.toString(), notBeforeMillis.toString()))
+    @Synchronized override fun nextReadyForCampaign(deviceId: String, campaignId: String): CloudExecutableJob? = queryExecutable("device_id=? AND campaign_id=? AND ack_state='ACKED' AND execution_state='READY' AND (block_code IS NULL OR (block_code='sim_gate' AND block_retry_at<=strftime('%s','now')*1000))", arrayOf(deviceId, campaignId))
+    @Synchronized override fun nextReadyForCampaignSince(deviceId: String, campaignId: String, notBeforeMillis: Long): CloudExecutableJob? = queryExecutable("device_id=? AND campaign_id=? AND ack_state='ACKED' AND execution_state='READY' AND (block_code IS NULL OR (block_code='sim_gate' AND block_retry_at<=strftime('%s','now')*1000)) AND (persisted_at>=? OR retry_ready_at>=?)", arrayOf(deviceId, campaignId, notBeforeMillis.toString(), notBeforeMillis.toString()))
     @Synchronized override fun getExecutable(deviceId: String, jobId: String): CloudExecutableJob? = readableDatabase.query("cloud_jobs", EXECUTION_COLUMNS, "device_id=? AND job_id=? AND ack_state='ACKED'", arrayOf(deviceId, jobId), null, null, null, "1").use { c -> if (c.moveToFirst()) executionJob(c) else null }
 
     private fun queryExecutable(where: String, args: Array<String>): CloudExecutableJob? = readableDatabase.query("cloud_jobs", EXECUTION_COLUMNS, where, args, null, null, "COALESCE(retry_ready_at,persisted_at) ASC, job_id ASC", "1").use { c -> if (c.moveToFirst()) executionJob(c) else null }
@@ -439,7 +470,7 @@ class SQLiteCloudQueueStore(context: Context) : SQLiteOpenHelper(context, "cloud
                 putNull("outcome_note"); put("unknown_resolved", 0); putNull("retry_ready_at")
                 putNull("sent_at"); putNull("delivered_at"); putNull("failed_at")
             }
-            if (db.update("cloud_jobs", jv, "device_id=? AND job_id=? AND execution_state='READY'", arrayOf(deviceId, jobId)) != 1) {
+            if (db.update("cloud_jobs", jv, "device_id=? AND job_id=? AND execution_state='READY' AND (block_code IS NULL OR (block_code='sim_gate' AND block_retry_at<=strftime('%s','now')*1000))", arrayOf(deviceId, jobId)) != 1) {
                 throw IllegalStateException("Cloud job changed before attempt preparation")
             }
             executionEvent(db, jobId, "Prepared immutable client attempt before server/SmsManager boundary")
@@ -460,7 +491,7 @@ class SQLiteCloudQueueStore(context: Context) : SQLiteOpenHelper(context, "cloud
             if (db.update("cloud_attempts", av, "client_attempt_id=? AND (attempt_number IS NULL OR attempt_number=?)", arrayOf(clientAttemptId, attemptNumber.toString())) != 1) {
                 throw IllegalStateException("Attempt number conflict")
             }
-            val jv = ContentValues().apply { put("current_attempt_no", attemptNumber) }
+            val jv = ContentValues().apply { put("current_attempt_no", attemptNumber); putNull("block_code"); put("block_retry_at", 0) }
             if (db.update("cloud_jobs", jv, "job_id=? AND current_attempt_id=?", arrayOf(jobId, clientAttemptId)) != 1) throw IllegalStateException("Current attempt binding changed")
             db.setTransactionSuccessful()
         } finally { db.endTransaction() }
@@ -473,7 +504,7 @@ class SQLiteCloudQueueStore(context: Context) : SQLiteOpenHelper(context, "cloud
             val attempt = readAttempt(db, clientAttemptId) ?: return false
             if (attempt.jobId != jobId || attempt.attemptNumber == null || attempt.state != CloudExecutionPolicy.OUTCOME_PREPARED) return false
             val jv = ContentValues().apply { put("execution_state", CloudExecutionPolicy.SUBMITTING); putNull("execution_note"); put("submission_started_at", at); putNull("submitted_at") }
-            val changed = db.update("cloud_jobs", jv, "device_id=? AND job_id=? AND ack_state='ACKED' AND execution_state='READY' AND current_attempt_id=?", arrayOf(deviceId, jobId, clientAttemptId))
+            val changed = db.update("cloud_jobs", jv, "device_id=? AND job_id=? AND ack_state='ACKED' AND execution_state='READY' AND (block_code IS NULL OR (block_code='sim_gate' AND block_retry_at<=strftime('%s','now')*1000)) AND current_attempt_id=?", arrayOf(deviceId, jobId, clientAttemptId))
             if (changed != 1) return false
             val av = ContentValues().apply { put("state", "SUBMITTING"); put("submission_started_at", at) }
             db.update("cloud_attempts", av, "client_attempt_id=?", arrayOf(clientAttemptId))
@@ -531,7 +562,7 @@ class SQLiteCloudQueueStore(context: Context) : SQLiteOpenHelper(context, "cloud
     private fun markUnknownInternal(db: SQLiteDatabase, deviceId: String, jobId: String, attemptId: String, note: String, at: Long, requireSubmitting: Boolean): Boolean {
         val where = if (requireSubmitting) "device_id=? AND job_id=? AND execution_state='SUBMITTING' AND current_attempt_id=?" else "device_id=? AND job_id=? AND current_attempt_id=? AND execution_state IN ('SUBMITTING','SUBMITTED')"
         val jv = ContentValues().apply { put("execution_state", CloudExecutionPolicy.UNKNOWN); put("execution_note", note); put("outcome_state", CloudExecutionPolicy.OUTCOME_UNKNOWN); put("outcome_note", note); put("unknown_resolved", 0) }
-        val changed = db.update("cloud_jobs", jv, where, arrayOf(deviceId, jobId, attemptId)) == 1
+        val changed = db.update("cloud_jobs", jv, "$where AND unknown_resolved=0", arrayOf(deviceId, jobId, attemptId)) == 1
         if (changed) {
             val av = ContentValues().apply { put("state", CloudExecutionPolicy.OUTCOME_UNKNOWN); put("safe_retry_eligible", 0); put("note", note); put("unknown_at", at) }
             db.update("cloud_attempts", av, "client_attempt_id=?", arrayOf(attemptId))
@@ -541,7 +572,7 @@ class SQLiteCloudQueueStore(context: Context) : SQLiteOpenHelper(context, "cloud
     }
 
     @Synchronized
-    fun recordAttemptCallback(clientAttemptId: String, eventId: String, partIndex: Int, kind: String, resultCode: Int, errorCode: Int? = null, atMillis: Long = System.currentTimeMillis(), deliveryConfirmed: Boolean = false): LocalAttemptOutcome {
+    fun recordAttemptCallback(clientAttemptId: String, eventId: String, partIndex: Int, kind: String, resultCode: Int, errorCode: Int? = null, atMillis: Long = System.currentTimeMillis(), deliveryConfirmed: Boolean = false, deliveryEvidence: com.bulktext.gateway.DeliveryEvidence? = null): LocalAttemptOutcome {
         require(kind == "sent" || kind == "delivery")
         val db = writableDatabase; db.beginTransaction()
         try {
@@ -597,16 +628,6 @@ class SQLiteCloudQueueStore(context: Context) : SQLiteOpenHelper(context, "cloud
                 db.insertOrThrow("cloud_attempt_diagnostics", null, dv)
             }
 
-            if (kind == "delivery" && !deliveryConfirmed) {
-                // Keep the raw callback in diagnostics. RESULT_OK alone is not proof
-                // of delivery; do not send a false success through the legacy RPC.
-                executionEvent(db, jobId, "Delivery report not confirmed; raw callback retained, no delivery claim or retry")
-                val outcome = currentAttemptOutcome(clientAttemptId)
-                    ?: LocalAttemptOutcome(CloudExecutionPolicy.OUTCOME_SUBMITTED, false, null)
-                db.setTransactionSuccessful()
-                return outcome
-            }
-
             val part = db.query("cloud_attempt_parts", arrayOf("sent_state", "sent_result_code", "delivery_state", "delivery_result_code"), "client_attempt_id=? AND part_index=?", arrayOf(clientAttemptId, partIndex.toString()), null, null, null, "1").use { c ->
                 if (!c.moveToFirst()) throw IllegalStateException("Callback part not found")
                 arrayOf(c.getString(0), if (c.isNull(1)) null else c.getInt(1), c.getString(2), if (c.isNull(3)) null else c.getInt(3))
@@ -620,15 +641,16 @@ class SQLiteCloudQueueStore(context: Context) : SQLiteOpenHelper(context, "cloud
                     db.update("cloud_attempt_parts", pv, "client_attempt_id=? AND part_index=?", arrayOf(clientAttemptId, partIndex.toString()))
                 } else if (oldState != next || oldCode != resultCode) conflict = true
             } else {
-                val next = if (resultCode == Activity.RESULT_OK) "DELIVERED" else "FAILED"
+                val next = if (resultCode == Activity.RESULT_OK) deliveryEvidence?.state() ?: "PENDING" else "PENDING"
                 val oldState = part[2] as String; val oldCode = part[3] as Int?
                 if (oldState == "PENDING") {
                     val pv = ContentValues().apply { put("delivery_state", next); put("delivery_result_code", resultCode); put("delivered_at", atMillis) }
                     db.update("cloud_attempt_parts", pv, "client_attempt_id=? AND part_index=?", arrayOf(clientAttemptId, partIndex.toString()))
-                } else if (oldState != next || oldCode != resultCode) conflict = true
+                } else if (next != "PENDING" && oldState != next) conflict = true
             }
-            enqueueEvent(db, eventId, clientAttemptId, kind, partIndex, resultCode, atMillis)
+            enqueueEvent(db, eventId, clientAttemptId, kind, partIndex, resultCode, atMillis, deliveryEvidence)
             val outcome = if (conflict) {
+                db.execSQL("UPDATE cloud_attempts SET conflict_latched=1 WHERE client_attempt_id=?", arrayOf(clientAttemptId))
                 setAttemptOutcome(db, clientAttemptId, jobId, CloudExecutionPolicy.OUTCOME_UNKNOWN, false, "Conflicting duplicate ${kind.uppercase()} callback; operator review required.", atMillis)
             } else aggregateAttempt(db, clientAttemptId, jobId, atMillis)
             db.setTransactionSuccessful(); return outcome
@@ -637,6 +659,8 @@ class SQLiteCloudQueueStore(context: Context) : SQLiteOpenHelper(context, "cloud
 
     private fun aggregateAttempt(db: SQLiteDatabase, clientAttemptId: String, jobId: String, at: Long): LocalAttemptOutcome {
         val attempt = readAttempt(db, clientAttemptId) ?: throw IllegalStateException("Attempt not found")
+        if (scalarInt(db, "SELECT conflict_latched FROM cloud_attempts WHERE client_attempt_id=?", arrayOf(clientAttemptId)) == 1)
+            return setAttemptOutcome(db, clientAttemptId, jobId, CloudExecutionPolicy.OUTCOME_UNKNOWN, false, "Conflicting callback evidence; operator review required.", at)
         val stats = db.rawQuery(
             "SELECT sum(CASE WHEN sent_state='SENT' THEN 1 ELSE 0 END), sum(CASE WHEN sent_state='FAILED' THEN 1 ELSE 0 END), sum(CASE WHEN sent_state='PENDING' THEN 1 ELSE 0 END), sum(CASE WHEN delivery_state='DELIVERED' THEN 1 ELSE 0 END) FROM cloud_attempt_parts WHERE client_attempt_id=?",
             arrayOf(clientAttemptId)
@@ -663,12 +687,12 @@ class SQLiteCloudQueueStore(context: Context) : SQLiteOpenHelper(context, "cloud
         }
         db.update("cloud_attempts", av, "client_attempt_id=?", arrayOf(attemptId))
         val jv = ContentValues().apply {
-            put("outcome_state", state); put("unknown_resolved", 0); if (note == null) putNull("outcome_note") else put("outcome_note", note.take(500))
+            put("outcome_state", state); if (note == null) putNull("outcome_note") else put("outcome_note", note.take(500))
             when (state) {
                 CloudExecutionPolicy.OUTCOME_SENT -> put("sent_at", at)
                 CloudExecutionPolicy.OUTCOME_DELIVERED -> { put("sent_at", at); put("delivered_at", at) }
                 CloudExecutionPolicy.OUTCOME_FAILED -> put("failed_at", at)
-                CloudExecutionPolicy.OUTCOME_UNKNOWN -> { put("execution_state", CloudExecutionPolicy.UNKNOWN); put("execution_note", note ?: "Ambiguous callback outcome") }
+                CloudExecutionPolicy.OUTCOME_UNKNOWN -> { if (scalarInt(db, "SELECT unknown_resolved FROM cloud_jobs WHERE job_id=?", arrayOf(jobId)) == 0) put("execution_state", CloudExecutionPolicy.UNKNOWN); put("execution_note", note ?: "Ambiguous callback outcome") }
             }
         }
         db.update("cloud_jobs", jv, "job_id=? AND current_attempt_id=?", arrayOf(jobId, attemptId))
@@ -682,12 +706,38 @@ class SQLiteCloudQueueStore(context: Context) : SQLiteOpenHelper(context, "cloud
     }
 
     @Synchronized
-    fun pendingAttemptEvents(limit: Int = 25): List<PendingAttemptEvent> = readableDatabase.query(
-        "cloud_callback_outbox", arrayOf("event_id", "client_attempt_id", "event_type", "part_index", "result_code", "occurred_at", "sync_attempts"), "synced_at IS NULL", null, null, null,
+    fun pendingAttemptEvents(deviceId: String, limit: Int = 25): List<PendingAttemptEvent> = readableDatabase.query(
+        "cloud_callback_outbox", arrayOf("event_id", "client_attempt_id", "event_type", "part_index", "result_code", "occurred_at", "sync_attempts", "delivery_format", "delivery_status", "delivery_sha256"),
+        "synced_at IS NULL AND disposition IS NULL AND device_id=?", arrayOf(deviceId), null, null,
         "occurred_at ASC, event_id ASC", limit.coerceIn(1, 25).toString()
     ).use { c -> buildList {
-        while (c.moveToNext()) add(PendingAttemptEvent(GatewayAttemptEvent(c.getString(0), c.getString(1), c.getString(2), if (c.isNull(3)) null else c.getInt(3), if (c.isNull(4)) null else c.getInt(4), c.getLong(5)), c.getInt(6)))
+        while (c.moveToNext()) add(PendingAttemptEvent(GatewayAttemptEvent(c.getString(0), c.getString(1), c.getString(2), if (c.isNull(3)) null else c.getInt(3), if (c.isNull(4)) null else c.getInt(4), c.getLong(5),
+            if(c.isNull(7)) null else c.getString(7), if(c.isNull(8)) null else c.getInt(8), if(c.isNull(9)) null else c.getString(9)), c.getInt(6)))
     } }
+
+    @Synchronized
+    fun completeReport(eventId: String, report: com.bulktext.gateway.cloud.GatewayAttemptReport) {
+        val db = writableDatabase; db.beginTransaction()
+        try {
+            val v = ContentValues().apply { put("disposition", report.outcome); put("synced_at", System.currentTimeMillis()) }
+            db.update("cloud_callback_outbox", v, "event_id=?", arrayOf(eventId))
+            val attempt = readAttempt(db, report.clientAttemptId)
+            if (attempt != null && report.outcome !in setOf("tombstoned", "rejected")) {
+                if (report.conflict) {
+                    db.execSQL("UPDATE cloud_attempts SET conflict_latched=1 WHERE client_attempt_id=?", arrayOf(attempt.clientAttemptId))
+                    setAttemptOutcome(db, attempt.clientAttemptId, attempt.jobId, "UNKNOWN", false, "Conflicting cloud callback evidence", System.currentTimeMillis())
+                }
+                if (report.resolved) db.execSQL("UPDATE cloud_jobs SET unknown_resolved=1 WHERE job_id=?", arrayOf(attempt.jobId))
+            }
+            db.setTransactionSuccessful()
+        } finally { db.endTransaction() }
+    }
+
+    @Synchronized
+    fun blockBeforeSubmission(deviceId: String, jobId: String, code: String) {
+        val v = ContentValues().apply { put("block_code", code); put("block_retry_at", System.currentTimeMillis()+30_000); put("execution_note", "Sending blocked: $code") }
+        writableDatabase.update("cloud_jobs", v, "device_id=? AND job_id=? AND submission_started_at IS NULL", arrayOf(deviceId,jobId))
+    }
 
     @Synchronized
     fun markAttemptEventSynced(eventId: String) {
@@ -700,27 +750,56 @@ class SQLiteCloudQueueStore(context: Context) : SQLiteOpenHelper(context, "cloud
         writableDatabase.execSQL("UPDATE cloud_callback_outbox SET sync_attempts=sync_attempts+1 WHERE event_id=? AND synced_at IS NULL", arrayOf<Any>(eventId))
     }
 
-    private fun enqueueEvent(db: SQLiteDatabase, eventId: String, clientAttemptId: String, eventType: String, partIndex: Int?, resultCode: Int?, at: Long) {
+    private fun enqueueEvent(db: SQLiteDatabase, eventId: String, clientAttemptId: String, eventType: String, partIndex: Int?, resultCode: Int?, at: Long, evidence: com.bulktext.gateway.DeliveryEvidence? = null) {
         val v = ContentValues().apply {
             put("event_id", eventId); put("client_attempt_id", clientAttemptId); put("event_type", eventType)
+            val owner = db.rawQuery("SELECT j.device_id FROM cloud_jobs j JOIN cloud_attempts a ON a.job_id=j.job_id WHERE a.client_attempt_id=?", arrayOf(clientAttemptId)).use { c -> check(c.moveToFirst()); c.getString(0) }
+            put("device_id", owner)
+            evidence?.let { put("delivery_format", it.format); put("delivery_status", it.status); put("delivery_sha256", it.sha256) }
             if (partIndex == null) putNull("part_index") else put("part_index", partIndex)
             if (resultCode == null) putNull("result_code") else put("result_code", resultCode)
             put("occurred_at", at); putNull("synced_at"); put("sync_attempts", 0)
         }
-        db.insertWithOnConflict("cloud_callback_outbox", null, v, SQLiteDatabase.CONFLICT_IGNORE)
+        val columns = arrayOf("client_attempt_id", "event_type", "part_index", "result_code", "occurred_at", "device_id", "delivery_format", "delivery_status", "delivery_sha256")
+        val exists = db.query("cloud_callback_outbox", columns, "event_id=?", arrayOf(eventId), null, null, null).use { c ->
+            if (!c.moveToFirst()) false else {
+                columns.forEachIndexed { index, column ->
+                    check((if (c.isNull(index)) null else c.getString(index)) == v.getAsString(column)) { "Callback UUID payload changed" }
+                }
+                true
+            }
+        }
+        if (!exists) db.insertOrThrow("cloud_callback_outbox", null, v)
     }
 
     @Synchronized
     fun applyRecoveryRequest(deviceId: String, request: GatewayRecoveryRequest): RecoveryApplyResult {
+        val db = writableDatabase; db.beginTransaction()
+        try {
+            val saved = db.rawQuery("SELECT outcome FROM recovery_ack_outbox WHERE recovery_id=? AND device_id=?", arrayOf(request.recoveryId,deviceId)).use { c -> if(c.moveToFirst()) c.getString(0) else null }
+            if (saved != null) { db.setTransactionSuccessful(); return when(saved) { "applied" -> RecoveryApplyResult.ALREADY_APPLIED; "rejected" -> RecoveryApplyResult.REJECTED_UNSAFE; else -> RecoveryApplyResult.NOT_APPLICABLE } }
+            val result = applyRecoveryLocally(deviceId, request)
+            val outcome = when(result) { RecoveryApplyResult.APPLIED, RecoveryApplyResult.ALREADY_APPLIED -> "applied"; RecoveryApplyResult.REJECTED_UNSAFE -> "rejected"; else -> "not_applicable" }
+            db.execSQL("INSERT INTO recovery_ack_outbox(recovery_id,device_id,outcome) VALUES(?,?,?)", arrayOf(request.recoveryId,deviceId,outcome))
+            db.setTransactionSuccessful(); return result
+        } finally { db.endTransaction() }
+    }
+
+    fun pendingRecoveryAcks(deviceId: String): List<Pair<String,String>> = readableDatabase.rawQuery("SELECT recovery_id,outcome FROM recovery_ack_outbox WHERE device_id=? AND acked_at IS NULL ORDER BY rowid LIMIT 25", arrayOf(deviceId)).use { c -> buildList { while(c.moveToNext()) add(c.getString(0) to c.getString(1)) } }
+    fun markRecoveryAcked(deviceId: String, recoveryId: String) {
+        writableDatabase.execSQL("UPDATE recovery_ack_outbox SET acked_at=? WHERE recovery_id=? AND device_id=?", arrayOf(System.currentTimeMillis(),recoveryId,deviceId))
+    }
+
+    private fun applyRecoveryLocally(deviceId: String, request: GatewayRecoveryRequest): RecoveryApplyResult {
         val db = writableDatabase; val now = System.currentTimeMillis(); db.beginTransaction()
         try {
             val seen = scalarInt(db, "SELECT count(*) FROM cloud_recovery_applied WHERE recovery_id=?", arrayOf(request.recoveryId)) > 0
             if (seen) { db.setTransactionSuccessful(); return RecoveryApplyResult.ALREADY_APPLIED }
             val job = db.query("cloud_jobs", arrayOf("current_attempt_id", "current_attempt_no", "outcome_state", "execution_state"), "device_id=? AND job_id=?", arrayOf(deviceId, request.jobId), null, null, null, "1").use { c ->
                 if (!c.moveToFirst()) null else arrayOf(if (c.isNull(0)) null else c.getString(0), if (c.isNull(1)) null else c.getInt(1), c.getString(2), c.getString(3))
-            } ?: return RecoveryApplyResult.NOT_APPLICABLE
-            if (job[0] != request.failedClientAttemptId || job[1] != request.attemptNumber) return RecoveryApplyResult.NOT_APPLICABLE
-            val attempt = readAttempt(db, request.failedClientAttemptId) ?: return RecoveryApplyResult.NOT_APPLICABLE
+            } ?: run { db.setTransactionSuccessful(); return RecoveryApplyResult.NOT_APPLICABLE }
+            if (job[0] != request.failedClientAttemptId || job[1] != request.attemptNumber) { db.setTransactionSuccessful(); return RecoveryApplyResult.NOT_APPLICABLE }
+            val attempt = readAttempt(db, request.failedClientAttemptId) ?: run { db.setTransactionSuccessful(); return RecoveryApplyResult.NOT_APPLICABLE }
             val applied = when (request.action) {
                 "safe_retry" -> {
                     // 0.18.1 defense in depth: callback-derived failure after
@@ -748,7 +827,7 @@ class SQLiteCloudQueueStore(context: Context) : SQLiteOpenHelper(context, "cloud
                     db.setTransactionSuccessful()
                     return RecoveryApplyResult.REJECTED_UNSAFE
                 }
-                return RecoveryApplyResult.NOT_APPLICABLE
+                db.setTransactionSuccessful(); return RecoveryApplyResult.NOT_APPLICABLE
             }
             val rv = ContentValues().apply { put("recovery_id", request.recoveryId); put("job_id", request.jobId); put("action", request.action); put("client_attempt_id", request.failedClientAttemptId); put("applied_at", now) }
             db.insertOrThrow("cloud_recovery_applied", null, rv)
@@ -762,7 +841,7 @@ class SQLiteCloudQueueStore(context: Context) : SQLiteOpenHelper(context, "cloud
         val db = writableDatabase; val safe = note.take(500); db.beginTransaction()
         try {
             val v = ContentValues().apply { put("execution_note", safe) }
-            val changed = db.update("cloud_jobs", v, "device_id=? AND job_id=? AND ack_state='ACKED' AND execution_state='READY'", arrayOf(deviceId, jobId))
+            val changed = db.update("cloud_jobs", v, "device_id=? AND job_id=? AND ack_state='ACKED' AND execution_state='READY' AND (block_code IS NULL OR (block_code='sim_gate' AND block_retry_at<=strftime('%s','now')*1000))", arrayOf(deviceId, jobId))
             if (changed == 1) executionEvent(db, jobId, "Pre-submission blocked: ${safe.take(300)}")
             db.setTransactionSuccessful()
         } finally { db.endTransaction() }
@@ -813,13 +892,15 @@ class SQLiteCloudQueueStore(context: Context) : SQLiteOpenHelper(context, "cloud
         fun outcome(state: String) = scalarInt(db, "SELECT count(*) FROM cloud_jobs WHERE $scope AND ack_state='ACKED' AND outcome_state=?", args + state)
         val unresolvedUnknown = scalarInt(db, "SELECT count(*) FROM cloud_jobs WHERE $scope AND ack_state='ACKED' AND outcome_state='UNKNOWN' AND unknown_resolved=0", args)
         return CloudExecutionCounts(
-            ready = exec(CloudExecutionPolicy.READY),
+            ready = scalarInt(db, "SELECT count(*) FROM cloud_jobs WHERE $scope AND ack_state='ACKED' AND execution_state='READY' AND block_code IS NULL", args),
             submitting = exec(CloudExecutionPolicy.SUBMITTING),
-            submitted = outcome(CloudExecutionPolicy.OUTCOME_SUBMITTED) + outcome(CloudExecutionPolicy.OUTCOME_PREPARED),
+            submitted = outcome(CloudExecutionPolicy.OUTCOME_SUBMITTED),
+            prepared = outcome(CloudExecutionPolicy.OUTCOME_PREPARED),
             sent = outcome(CloudExecutionPolicy.OUTCOME_SENT),
             delivered = outcome(CloudExecutionPolicy.OUTCOME_DELIVERED),
             failed = outcome(CloudExecutionPolicy.OUTCOME_FAILED),
-            unknown = unresolvedUnknown
+            unknown = unresolvedUnknown,
+            blocked = scalarInt(db, "SELECT count(*) FROM cloud_jobs WHERE $scope AND block_code IS NOT NULL", args)
         )
     }
 

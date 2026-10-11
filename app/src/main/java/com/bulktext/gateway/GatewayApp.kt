@@ -40,14 +40,14 @@ class GatewayApp : Application() {
         backgroundGatewayPreferences = BackgroundGatewayPreferences(this)
         cloudQueueStore = SQLiteCloudQueueStore(this)
         cloudQueueRepository = CloudQueueRepository(secureCredentialStore, supabaseGatewayApi, cloudQueueStore)
-        cloudDeliveryRepository = CloudDeliveryRepository(secureCredentialStore, supabaseGatewayApi, cloudQueueStore)
+        cloudDeliveryRepository = CloudDeliveryRepository(secureCredentialStore, supabaseGatewayApi, cloudQueueStore, backgroundGatewayPreferences)
 
         val recoveredUnknown = cloudQueueStore.recoverInterruptedSubmissions()
         if (recoveredUnknown > 0) {
             backgroundGatewayPreferences.pause("Gateway paused: an interrupted SUBMITTING job recovered as UNKNOWN. Use Web recovery; no automatic retry.")
         }
 
-        if (cloudQueueStore.pendingAttemptEvents(1).isNotEmpty()) CallbackSyncService.schedule(this)
+        if (secureCredentialStore.getDeviceId()?.let { cloudQueueStore.pendingAttemptEvents(it, 1).isNotEmpty() } == true) CallbackSyncService.schedule(this)
 
         // 0.18 keeps the service alive while paused so it can receive explicit Web
         // recovery requests and flush callback outbox events without opening the app.

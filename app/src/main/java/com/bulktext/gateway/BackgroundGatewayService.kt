@@ -108,7 +108,7 @@ class BackgroundGatewayService : Service() {
                     if (exactLocalSim != null) {
                         val queueResult = app.cloudQueueRepository.sync(CloudQueueExecutionIdentity(deviceId, binding.simId, binding.subscriptionId, binding.slotIndex, exactLocalSim.simIdentityHash!!))
                         when (queueResult) {
-                            is CloudQueueState.CredentialRejected -> updateStatus("Gateway credential rejected. Re-pair this phone.")
+                            is CloudQueueState.CredentialRejected -> { updateStatus("Gateway credential rejected. Re-pair this phone."); return }
                             is CloudQueueState.Offline -> updateStatus("Waiting for network. Durable local jobs are retained.")
                             is CloudQueueState.SimBlocked -> updateStatus("Blocked: ${queueResult.message}")
                             is CloudQueueState.Error -> updateStatus("Waiting: ${queueResult.message}")
@@ -120,7 +120,7 @@ class BackgroundGatewayService : Service() {
                 } else {
                     when (inventory) {
                         GatewayInventoryState.Offline -> updateStatus("Waiting for network. Durable local jobs are retained.")
-                        GatewayInventoryState.CredentialRejected -> updateStatus("Gateway credential rejected. Re-pair this phone.")
+                        GatewayInventoryState.CredentialRejected -> { app.cloudQueueStore.recordSync(deviceId, System.currentTimeMillis(), "Gateway credential rejected"); updateStatus("Gateway credential rejected. Re-pair this phone."); return }
                         GatewayInventoryState.PermissionRequired -> updateStatus("Waiting for phone/SMS permission.")
                         is GatewayInventoryState.Missing -> updateStatus("Blocked: exact Web-selected SIM is missing. No fallback SIM will be used.")
                         is GatewayInventoryState.Unbound -> updateStatus("Waiting: select the sending SIM in BulkText Web.")
@@ -142,6 +142,11 @@ class BackgroundGatewayService : Service() {
             updateStatus("Waiting for network to confirm recovery before any retry can execute.")
         }
 
+        if (prefs.operationError(deviceId, "callbacks") != null || prefs.operationError(deviceId, "recovery") != null) {
+            updateStatus("Cloud sync needs attention. Pending events retained; new SMS submission waiting.")
+            return
+        }
+
         val finalExecution = app.cloudQueueStore.executionCounts(deviceId)
         if (finalExecution.unknown > 0) {
             val reason = "Gateway recovery mode: an SMS is UNKNOWN. Queue/callback/recovery sync is active; sending remains paused."
@@ -158,7 +163,7 @@ class BackgroundGatewayService : Service() {
         if (next == null) { updateStatus("Gateway active • waiting for Web-authorized campaigns"); return }
 
         if (stopping || !prefs.submissionGate.isAllowed(permit)) return
-        updateStatus("Gateway active • sending campaign ${next.campaignId.take(8)}…")
+        updateStatus("Gateway active • preparing campaign ${next.campaignId.take(8)}…")
         startForegroundService(Intent(this, CloudSendingService::class.java)
             .putExtra(CloudSendingService.EXTRA_STOP_GENERATION, permit.generation)
             .putExtra(CloudSendingService.EXTRA_AUTOMATIC, true)

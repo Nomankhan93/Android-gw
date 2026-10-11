@@ -1,3 +1,24 @@
+# Current release: Android 0.18.5-r1 / code 18
+
+Correction: scalar v2 RPC response parsing; distinct Prepared/Submitted counters; persisted per-device operation errors and truthful sync success timestamps.
+Read PATCH_0_18_5_R1_README.md and VALIDATION_0_18_5_R1.md first.
+No schema migration or reset. Web 0.18.5 backend prerequisite is unchanged.
+Next: device acceptance of this correction before Web 0.18.6 or major UI redesign.
+
+---
+
+# Current release: Android 0.18.5 / code 17
+
+Start with PATCH_0_18_5_README.md and VALIDATION_0_18_5.md in the project root.
+Backend prerequisite: Web 0.18.5 delivery/recovery contract migration already applied.
+DB version 7 adds durable recovery ACKs, owned callback outboxes, delivery evidence and conflict latches.
+No automatic UNKNOWN resend, no destructive reset, no theme redesign in this patch.
+Next planned release: Web 0.18.6 Draft Reliability, Imports & Campaign UX.
+
+---
+
+## Historical handoff (superseded where it conflicts with the current release)
+
 # BulkText Android development handoff — 0.18.0
 
 Current release: **0.18.0 / versionCode 12**.

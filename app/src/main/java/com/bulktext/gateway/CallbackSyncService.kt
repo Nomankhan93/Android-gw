@@ -23,7 +23,7 @@ class CallbackSyncService : JobService() {
                 if (!stop.get()) {
                     // Bound each run; JobScheduler retries durable remaining events.
                     val synced = app.cloudDeliveryRepository.flushEvents(10)
-                    retry = app.cloudQueueStore.pendingAttemptEvents(1).isNotEmpty()
+                    retry = app.secureCredentialStore.getDeviceId()?.let { app.cloudQueueStore.pendingAttemptEvents(it, 1).isNotEmpty() } ?: false
                     if (synced > 0 || !retry) app.backgroundGatewayPreferences.markCallbackFlush()
                 }
             } catch (_: Exception) {

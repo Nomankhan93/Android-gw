@@ -103,19 +103,24 @@ class CloudSendingService : Service() {
                 ?: throw IllegalStateException("Exact Web-selected SIM is not Ready. No SMS was submitted.")
             val binding = ready.binding
             val localIdentityHash = snapshot.sims.firstOrNull { it.subscriptionId == current.subscriptionId && it.slotIndex == current.slotIndex }?.simIdentityHash
-            require(CloudExecutionPolicy.exactSimMatches(current, binding.simId, binding.subscriptionId, binding.slotIndex, localIdentityHash)) {
-                "Exact authorized SIM identity changed or is missing. No fallback SIM will be used."
+            if (!CloudExecutionPolicy.exactSimMatches(current, binding.simId, binding.subscriptionId, binding.slotIndex, localIdentityHash)) {
+                app.cloudQueueStore.blockBeforeSubmission(deviceId, current.jobId, "sim_gate")
+                return true
             }
 
             val manager = Telephony.manager(this, current.subscriptionId)
             val parts = manager.divideMessage(current.body)
-            require(CloudExecutionPolicy.segmentCountMatches(current.expectedSegments, parts.size)) { "Segment calculation changed; cloud submission withheld." }
+            if (!CloudExecutionPolicy.segmentCountMatches(current.expectedSegments, parts.size)) {
+                app.cloudQueueStore.blockBeforeSubmission(deviceId, current.jobId, "segment_mismatch")
+                return true
+            }
 
             // Durable local attempt, then authoritative cloud registration. If cloud
             // is unavailable, execution stops before SmsManager and remains safe.
             val localAttempt = app.cloudQueueStore.ensurePreparedAttempt(deviceId, current.jobId, parts.size)
             clientAttemptId = localAttempt.clientAttemptId
-            app.cloudDeliveryRepository.beginAttempt(current.jobId, localAttempt)
+            val grant = app.cloudDeliveryRepository.beginAttempt(current.jobId, localAttempt)
+            if (grant.outcome != "registered" || !grant.canSubmit) return true // skip blocked job; never cross SMS boundary
 
             val sentIntents = ArrayList<PendingIntent>(parts.size)
             val deliveryIntents = ArrayList<PendingIntent>(parts.size)
@@ -128,6 +133,7 @@ class CloudSendingService : Service() {
             // above is outside it. Once disable returns, old permits cannot submit.
             val submitted = app.backgroundGatewayPreferences.submissionGate.runIfAllowed(permit) {
                 check(!stopping) { "Cloud sending service stopped before submission." }
+                check(app.secureCredentialStore.getDeviceId() == deviceId) { "Pairing changed before submission" }
                 require(app.cloudQueueStore.beginSubmission(deviceId, current.jobId, localAttempt.clientAttemptId)) {
                     "Cloud job could not enter SUBMITTING; it will not be sent."
                 }

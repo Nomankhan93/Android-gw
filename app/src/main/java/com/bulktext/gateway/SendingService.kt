@@ -26,7 +26,7 @@ class SendingService : Service() {
             if(!store.start(selected.id)) {finish("PAUSED");return START_NOT_STICKY}
             session=selected
             startedAt=SystemClock.elapsedRealtime()
-            wake=getSystemService(PowerManager::class.java).newWakeLock(PowerManager.PARTIAL_WAKE_LOCK,"BulkText:TestSession").apply {acquire(145_000)}
+            wake=requireNotNull(getSystemService(PowerManager::class.java)).newWakeLock(PowerManager.PARTIAL_WAKE_LOCK,"BulkText:TestSession").apply {acquire(145_000)}
             handler.post(tick)
         } catch(e: Exception) {
             store.annotate(selected.id,"Cannot start: ${e.message ?: e.javaClass.simpleName}")
@@ -37,7 +37,7 @@ class SendingService : Service() {
     }
     private fun showNotification() {
         val nm=getSystemService(NotificationManager::class.java)
-        nm.createNotificationChannel(NotificationChannel("sending","Test SMS session",NotificationManager.IMPORTANCE_LOW))
+        requireNotNull(nm).createNotificationChannel(NotificationChannel("sending","Test SMS session",NotificationManager.IMPORTANCE_LOW))
         val open=PendingIntent.getActivity(this,0,Intent(this,MainActivity::class.java),PendingIntent.FLAG_IMMUTABLE)
         val stop=PendingIntent.getService(this,1,Intent(this,SendingService::class.java).setAction("STOP"),PendingIntent.FLAG_IMMUTABLE)
         val n=Notification.Builder(this,"sending").setSmallIcon(android.R.drawable.ic_dialog_email)

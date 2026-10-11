@@ -27,9 +27,7 @@ class CloudSmsResultReceiver : BroadcastReceiver() {
         val expectedAction = "com.bulktext.gateway.CLOUD_SMS_${kind.uppercase()}_${attemptId}_${partIndex}"
         if (intent.action != expectedAction) return
         val receivedAt = System.currentTimeMillis()
-        val deliveryConfirmed = kind == KIND_DELIVERY && CloudCallbackPolicy.isConfirmedDelivery(
-            callbackResult, intent.getByteArrayExtra("pdu"), intent.getStringExtra("format")
-        )
+        val evidence = if (kind == KIND_DELIVERY) CloudCallbackPolicy.parseEvidence(intent.getByteArrayExtra("pdu"), intent.getStringExtra("format")) else null
         val pending = goAsync()
         Thread({
             try {
@@ -39,13 +37,13 @@ class CloudSmsResultReceiver : BroadcastReceiver() {
                     val app = context.applicationContext as GatewayApp
                     app.cloudQueueStore.recordAttemptCallback(
                         clientAttemptId = attemptId,
-                        eventId = eventId,
+                        eventId = java.util.UUID.randomUUID().toString(),
                         partIndex = partIndex,
                         kind = kind,
                         resultCode = callbackResult,
                         errorCode = errorCode,
                         atMillis = receivedAt,
-                        deliveryConfirmed = deliveryConfirmed
+                        deliveryEvidence = evidence
                     )
                     CallbackSyncService.schedule(context.applicationContext)
                 }

@@ -25,7 +25,7 @@ receiver = Path('app/src/main/java/com/bulktext/gateway/CloudSmsResultReceiver.k
 assert receiver.index('val callbackResult = resultCode') < receiver.index('val pending = goAsync()')
 assert 'cloudDeliveryRepository.flushEvents' not in receiver
 assert receiver.index('recordAttemptCallback') < receiver.index('CallbackSyncService.schedule')
-assert 'deliveryConfirmed = deliveryConfirmed' in receiver
+assert 'deliveryEvidence = evidence' in receiver
 assert 'CloudCallbackPolicy.pendingIntentFlags()' in s
 assert 'submissionGate.runIfAllowed(permit)' in s
 assert s.index('submissionGate.runIfAllowed(permit)') < submitting < sms
@@ -52,5 +52,12 @@ worker = Path('app/src/main/java/com/bulktext/gateway/CallbackSyncService.kt').r
 assert 'flushEvents(10)' in worker
 for forbidden in ['sendMultipartTextMessage', 'sendTextMessage', 'syncRecoveryRequests', 'claimGatewayMessageJobs']:
     assert forbidden not in worker
-assert 'kind == "delivery" && !deliveryConfirmed' in store
-print("PASS: 0.18.4 source boundary contracts (static checks, not Android runtime tests)")
+assert 'recovery_ack_outbox' in store
+assert 'conflict_latched' in store
+assert 'synced_at IS NULL AND disposition IS NULL AND device_id=?' in store
+for rpc in ['begin_gateway_message_attempt_v2', 'report_gateway_message_attempt_event_v2', 'acknowledge_gateway_message_recovery_v2']:
+    assert rpc in a
+assert 'UUID.randomUUID().toString()' in receiver
+assert 'Callback UUID payload changed' in store
+assert 'unknown_resolved=0' in store
+print("PASS: 0.18.5-r1 source boundary contracts (static checks, not Android runtime tests)")

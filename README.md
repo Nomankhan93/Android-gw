@@ -1,7 +1,5 @@
-# BulkText Android 0.18.4 — Callback Capture & Safe Stop
+# BulkText Android 0.18.5-r1 — RPC Response & Sync Status Correction
 
-Android SIM gateway with durable cloud queue and exact-SIM execution.
-
-See `PATCH_0_18_4_README.md` for this patch, build commands and device acceptance checks.
-See `VALIDATION_0_18_4.md` for executed checks and remaining release gates.
-Older PATCH/VALIDATION documents describe historical releases only.
+See PATCH_0_18_5_R1_README.md for changes, upgrade commands and device checks.
+See VALIDATION_0_18_5_R1.md for executed checks and remaining release gates.
+Version code 18; SQLite 7; requires Web 0.18.5 backend. Previous release documents are historical.

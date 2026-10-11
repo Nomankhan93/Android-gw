@@ -6,7 +6,10 @@ data class GatewayAttemptStart(
     val attemptNumber: Int,
     val state: String,
     val safeRetryEligible: Boolean,
-    val createdAt: Long
+    val createdAt: Long,
+    val outcome: String = "registered",
+    val canSubmit: Boolean = false,
+    val blockCode: String? = null
 )
 
 data class GatewayAttemptEvent(
@@ -15,7 +18,10 @@ data class GatewayAttemptEvent(
     val eventType: String,
     val partIndex: Int?,
     val resultCode: Int?,
-    val occurredAtMillis: Long
+    val occurredAtMillis: Long,
+    val deliveryFormat: String? = null,
+    val deliveryStatus: Int? = null,
+    val deliveryPduSha256: String? = null
 ) {
     init {
         require(eventId.isNotBlank())
@@ -39,7 +45,10 @@ data class GatewayAttemptReport(
     val safeRetryEligible: Boolean,
     val sentParts: Int,
     val failedSentParts: Int,
-    val deliveredParts: Int
+    val deliveredParts: Int,
+    val outcome: String = "accepted",
+    val conflict: Boolean = false,
+    val resolved: Boolean = false
 )
 
 data class GatewayRecoveryRequest(

@@ -23,7 +23,9 @@ data class CloudExecutionCounts(
     val sent: Int,
     val delivered: Int,
     val failed: Int,
-    val unknown: Int
+    val unknown: Int,
+    val blocked: Int = 0,
+    val prepared: Int = 0
 )
 
 /**

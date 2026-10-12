@@ -20,8 +20,8 @@ android {
         applicationId = "com.bulktext.gateway.prototype"
         minSdk = 26
         targetSdk = 35
-        versionCode = 18
-        versionName = "0.18.5-r1"
+        versionCode = 21
+        versionName = "0.18.7"
 
         val supabaseUrl = bulkTextConfig("BULKTEXT_SUPABASE_URL", "https://placeholder.supabase.co")
         val supabaseKey = bulkTextConfig("BULKTEXT_SUPABASE_ANON_KEY", "placeholder-key")

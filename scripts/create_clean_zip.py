@@ -1,63 +1,34 @@
-import os
+#!/usr/bin/env python3
+"""Package the verified source manifest only; preserve local configuration outside the archive."""
+import argparse
+import hashlib
+import importlib.util
+import re
 import zipfile
 from pathlib import Path
 
-ROOT_DIR = Path(__file__).resolve().parent.parent
-OUTPUT_ZIP = ROOT_DIR / "bulktext-android-0.18.4-clean.zip"
-
-EXCLUDE_DIRS = {
-    ".gradle",
-    ".kotlin",
-    ".idea",
-    "build",
-    "app/build",
-    ".artifacts",
-    ".patch-backups",
-    "__pycache__"
-}
-
-EXCLUDE_FILES = {
-    "local.properties",
-    "bulktext-android-0.6.1.zip",
-    "bulktext-android-0.18.4-clean.zip",
-    "source-validate-debug.txt",
-    ".DS_Store"
-}
-
-def is_excluded(path: Path) -> bool:
-    rel = path.relative_to(ROOT_DIR)
-    parts = rel.parts
-    for p in parts:
-        if p in EXCLUDE_DIRS:
-            return True
-        if p.startswith(".artifacts"):
-            return True
-        if p.startswith(".patch-backups"):
-            return True
-    if path.name in EXCLUDE_FILES:
-        return True
-    if path.suffix == ".pyc":
-        return True
-    return False
+ROOT = Path(__file__).resolve().parents[1]
 
 def main():
-    if OUTPUT_ZIP.exists():
-        OUTPUT_ZIP.unlink()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--output', type=Path)
+    args = parser.parse_args()
+    spec = importlib.util.spec_from_file_location('source_checksums', ROOT / 'scripts/source-checksums.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    expected = module.manifest_text()
+    if (ROOT / 'SHA256SUMS.txt').read_text() != expected:
+        raise SystemExit('Source checksum mismatch. Review changes before packaging.')
+    version = re.search(r'versionName\s*=\s*"([0-9.a-z-]+)"', (ROOT / 'app/build.gradle.kts').read_text()).group(1)
+    output = (args.output or ROOT.parent / f'bulktext-android-{version}-clean-source.zip').resolve()
+    if output.exists(): raise SystemExit(f'Output already exists; choose a new --output path: {output}')
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(output, 'w', zipfile.ZIP_DEFLATED) as archive:
+        for file in list(module.source_files()) + [ROOT / 'SHA256SUMS.txt']:
+            archive.write(file, f'bulktext-android-{version}/' + file.relative_to(ROOT).as_posix())
+    with zipfile.ZipFile(output) as archive:
+        if archive.testzip(): raise SystemExit('ZIP integrity check failed')
+    print(f'ZIP: {output}')
+    print(f'SHA256: {hashlib.sha256(output.read_bytes()).hexdigest()}')
 
-    included_count = 0
-    with zipfile.ZipFile(OUTPUT_ZIP, "w", zipfile.ZIP_DEFLATED) as zf:
-        for file_path in ROOT_DIR.rglob("*"):
-            if file_path.is_file():
-                if is_excluded(file_path):
-                    continue
-                arcname = file_path.relative_to(ROOT_DIR)
-                zf.write(file_path, arcname)
-                included_count += 1
-
-    size_kb = OUTPUT_ZIP.stat().st_size / 1024
-    print(f"Created clean ZIP: {OUTPUT_ZIP.name}")
-    print(f"Files included: {included_count}")
-    print(f"ZIP file size: {size_kb:.1f} KB")
-
-if __name__ == "__main__":
-    main()
+if __name__ == '__main__': main()

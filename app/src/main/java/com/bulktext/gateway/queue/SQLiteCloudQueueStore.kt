@@ -7,6 +7,7 @@ import android.content.Context
 import android.database.Cursor
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
+import android.os.Build
 import android.telephony.SmsManager
 import com.bulktext.gateway.cloud.GatewayAttemptEvent
 import com.bulktext.gateway.cloud.GatewayQueueJob
@@ -404,6 +405,11 @@ class SQLiteCloudQueueStore(context: Context) : SQLiteOpenHelper(context, "cloud
             devices.put(device)
         }
         root.put("devices", devices)
+        root.put("systemHealth", JSONObject()
+            .put("androidVersion", Build.VERSION.RELEASE)
+            .put("sdkInt", Build.VERSION.SDK_INT)
+            .put("manufacturer", Build.MANUFACTURER)
+            .put("model", Build.MODEL))
         root.put("privacy", "Recipient phone numbers, SMS bodies, gateway credentials and Supabase keys are excluded.")
         return root.toString(2)
     }

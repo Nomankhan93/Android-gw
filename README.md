@@ -1,5 +1,7 @@
-# BulkText Android 0.18.5-r1 — RPC Response & Sync Status Correction
+# BulkText Android 0.18.7 — Minimal Gateway UX
 
-See PATCH_0_18_5_R1_README.md for changes, upgrade commands and device checks.
-See VALIDATION_0_18_5_R1.md for executed checks and remaining release gates.
-Version code 18; SQLite 7; requires Web 0.18.5 backend. Previous release documents are historical.
+VersionCode 21; SQLite 7; Web backend contract 0.18.5.
+
+Main screen: connection, Web-selected SIM, gateway status, setup and Start/Stop. Technical diagnostics and local SMS lab are secondary. Battery guidance appears during setup or a relevant activity problem.
+
+Read PATCH_0_18_7_README.md for behavior, upgrade commands and device acceptance. Read VALIDATION_0_18_7.md for checks and limitations. Earlier release documentation is historical.

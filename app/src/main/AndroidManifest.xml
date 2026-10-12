@@ -9,7 +9,7 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_REMOTE_MESSAGING" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-feature android:name="android.hardware.telephony" android:required="true" />
-    <application android:name=".GatewayApp" android:label="BulkText Lab" android:theme="@style/AppTheme"
+    <application android:name=".GatewayApp" android:label="BulkText Gateway" android:theme="@style/AppTheme"
         android:icon="@drawable/ic_launcher" android:dataExtractionRules="@xml/data_extraction_rules" android:fullBackupContent="false" android:allowBackup="false" android:supportsRtl="true" android:usesCleartextTraffic="false">
         <activity android:name=".MainActivity" android:exported="true">
             <intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter>
@@ -17,7 +17,14 @@
         <service android:name=".SendingService" android:exported="false" android:foregroundServiceType="shortService" />
         <receiver android:name=".SmsResultReceiver" android:exported="false" />
         <receiver android:name=".CloudSmsResultReceiver" android:exported="false" />
+        <receiver android:name=".GatewayBootReceiver" android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
         <service android:name=".CallbackSyncService" android:permission="android.permission.BIND_JOB_SERVICE" android:exported="false" />
+        <service android:name=".GatewayWatchdogService" android:permission="android.permission.BIND_JOB_SERVICE" android:exported="false" />
         <service android:name=".CloudSendingService" android:exported="false" android:foregroundServiceType="remoteMessaging" />
         <service android:name=".BackgroundGatewayService" android:exported="false" android:foregroundServiceType="remoteMessaging" />
     </application>

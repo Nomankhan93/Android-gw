@@ -52,12 +52,15 @@ class GatewayApp : Application() {
         // 0.18 keeps the service alive while paused so it can receive explicit Web
         // recovery requests and flush callback outbox events without opening the app.
         if (backgroundGatewayPreferences.isEnabled()) {
+            GatewayWatchdogService.schedule(this)
             try {
                 val intent = Intent(this, BackgroundGatewayService::class.java)
                 if (Build.VERSION.SDK_INT >= 26) startForegroundService(intent) else startService(intent)
             } catch (_: Exception) {
                 backgroundGatewayPreferences.setStatus("Gateway is enabled but Android did not start the background service. Open the app once.")
             }
+        } else {
+            GatewayWatchdogService.cancel(this)
         }
     }
 }

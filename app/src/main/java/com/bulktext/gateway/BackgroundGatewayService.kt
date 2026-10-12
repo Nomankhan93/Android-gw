@@ -34,7 +34,8 @@ class BackgroundGatewayService : Service() {
         showNotification(app.backgroundGatewayPreferences.pausedReason() ?: "Gateway active • waiting for campaigns")
         if (!workerRunning) {
             workerRunning = true
-            Thread({ runLoop() }, "BulkTextBackgroundGateway0184").start()
+            GatewayWatchdogService.schedule(this)
+            Thread({ runLoop() }, "BulkTextBackgroundGateway0186").start()
         }
         return START_STICKY
     }
@@ -164,12 +165,16 @@ class BackgroundGatewayService : Service() {
 
         if (stopping || !prefs.submissionGate.isAllowed(permit)) return
         updateStatus("Gateway active • preparing campaign ${next.campaignId.take(8)}…")
-        startForegroundService(Intent(this, CloudSendingService::class.java)
-            .putExtra(CloudSendingService.EXTRA_STOP_GENERATION, permit.generation)
-            .putExtra(CloudSendingService.EXTRA_AUTOMATIC, true)
-            .putExtra(CloudSendingService.EXTRA_DEVICE_ID, deviceId)
-            .putExtra(CloudSendingService.EXTRA_CAMPAIGN_ID, next.campaignId)
-            .putExtra(CloudSendingService.EXTRA_NOT_BEFORE, activatedAt))
+        try {
+            startForegroundService(Intent(this, CloudSendingService::class.java)
+                .putExtra(CloudSendingService.EXTRA_STOP_GENERATION, permit.generation)
+                .putExtra(CloudSendingService.EXTRA_AUTOMATIC, true)
+                .putExtra(CloudSendingService.EXTRA_DEVICE_ID, deviceId)
+                .putExtra(CloudSendingService.EXTRA_CAMPAIGN_ID, next.campaignId)
+                .putExtra(CloudSendingService.EXTRA_NOT_BEFORE, activatedAt))
+        } catch (e: Exception) {
+            updateStatus("Gateway active • campaign send start deferred (${e.javaClass.simpleName})")
+        }
     }
 
     private fun updateStatus(message: String) {

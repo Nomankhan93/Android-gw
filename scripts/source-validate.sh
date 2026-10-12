@@ -7,8 +7,8 @@ bash scripts/test-queue-core.sh
 bash scripts/test-cloud-execution-core.sh
 bash scripts/test-background-gateway-core.sh
 
-grep -q 'versionName = "0.18.5-r1"' app/build.gradle.kts
-grep -q 'versionCode = 18' app/build.gradle.kts
+grep -q 'versionName = "0.18.7"' app/build.gradle.kts
+grep -q 'versionCode = 21' app/build.gradle.kts
 
 for f in \
   app/src/main/java/com/bulktext/gateway/CloudSendingService.kt \
@@ -108,4 +108,10 @@ echo 'f8d9a9335b23db7d86240363eb88cf5c9a3b890941f0f88eddd5f3420c108476  app/src/
 echo 'a37c855fcba7df3b172b82cf77700a6c9a27d132d26612bf5193e826b4b63a69  app/src/main/java/com/bulktext/gateway/Store.kt' | sha256sum -c -
 
 sha256sum -c SHA256SUMS.txt >/dev/null
-echo 'PASS: BulkText Android 0.18.5-r1 source validation'
+# 0.18.6: Boot receiver and Watchdog service.
+grep -q 'GatewayBootReceiver' app/src/main/AndroidManifest.xml
+grep -q 'GatewayWatchdogService' app/src/main/AndroidManifest.xml
+! grep -qE 'sendMultipartTextMessage|sendTextMessage' app/src/main/java/com/bulktext/gateway/GatewayBootReceiver.kt
+! grep -qE 'sendMultipartTextMessage|sendTextMessage' app/src/main/java/com/bulktext/gateway/GatewayWatchdogService.kt
+
+echo 'PASS: BulkText Android 0.18.7 source validation'

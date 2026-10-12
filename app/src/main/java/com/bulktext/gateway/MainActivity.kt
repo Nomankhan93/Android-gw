@@ -6,9 +6,16 @@ import android.app.AlertDialog
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Color
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
+import android.net.Uri
 import android.os.*
+import android.provider.Settings
 import android.telephony.SubscriptionInfo
 import android.text.InputType
+import android.graphics.drawable.GradientDrawable
+import android.view.ViewGroup
+import android.view.inputmethod.InputMethodManager
 import android.view.View
 import android.widget.*
 import com.bulktext.gateway.identity.GatewayIdentityState
@@ -28,6 +35,18 @@ class MainActivity : Activity() {
     private val inventoryProvider get() = app.inventoryProvider
     private val cloudQueueRepo get() = app.cloudQueueRepository
 
+    private lateinit var minimalConnection: TextView
+    private lateinit var minimalSim: TextView
+    private lateinit var minimalStatus: TextView
+    private lateinit var minimalToggle: Button
+    private lateinit var setupHint: TextView
+    private lateinit var setupAction: Button
+    private lateinit var powerAction: Button
+    private lateinit var powerSkip: Button
+    private lateinit var detailsPanel: LinearLayout
+    private lateinit var labPanel: LinearLayout
+    private var minimalInventoryAt = 0L
+    private val uxPrefs get() = getSharedPreferences("bulktext_gateway_ux", MODE_PRIVATE)
     private lateinit var layout: LinearLayout
     private lateinit var pairingStatus: TextView
     private lateinit var pairingCodeInput: EditText
@@ -40,6 +59,7 @@ class MainActivity : Activity() {
     private lateinit var backgroundGatewayStatus: TextView
     private lateinit var backgroundGatewayButton: Button
     private lateinit var manualCampaignButton: Button
+    private lateinit var gatewayReliabilityStatus: TextView
 
     private lateinit var sim: Spinner
     private lateinit var numbers: EditText
@@ -56,6 +76,7 @@ class MainActivity : Activity() {
     private val autoSync = object : Runnable {
         override fun run() {
             if (!activityForeground) return
+            refreshCloudInventory()
             maybeAutoSyncCloudQueue()
             if (activityForeground) handler.postDelayed(this, 30_000)
         }
@@ -122,6 +143,12 @@ class MainActivity : Activity() {
         backgroundGatewayButton = button("Enable background gateway") { toggleBackgroundGateway() }
         text("Enable once before sending from Web. The persistent gateway syncs jobs, records callback truth, and polls explicit Web recovery while paused. Existing pre-activation READY jobs are not silently auto-sent. UNKNOWN is never automatically retried.", 14)
 
+        // --- Gateway Reliability & Power Status (0.18.6) ---
+        text("Gateway Reliability & Power Status", 20)
+        gatewayReliabilityStatus = text("Checking gateway background health…", 14)
+        button("Review battery & OEM background settings") { showBatteryOptimizationGuidance() }
+        text("Aggressive power management on devices like vivo, Xiaomi, and OPPO can delay background sync. Allowing background activity may reduce delays; Android and OEM restrictions can still pause work.", 14)
+
         // --- Durable Cloud Queue Client (sync remains non-sending) ---
         text("Cloud Queue", 20)
         cloudQueueStatus = text("Cloud Queue status: Not synced yet", 14)
@@ -151,7 +178,7 @@ class MainActivity : Activity() {
         body = edit("Type an English or Urdu test message", 5)
         body.id = R.id.message
 
-        consent = CheckBox(this).apply { setText(R.string.consent) }
+        consent = CheckBox(this).apply { text = "These recipients agreed to this test. I accept possible SIM charges." }
         layout.addView(consent)
 
         button("Preview & confirm test") { preview() }
@@ -194,8 +221,123 @@ class MainActivity : Activity() {
 
         text("Sent = Android send callback succeeded. Delivered appears only when a delivery callback is received. COMPLETE means all jobs were submitted, not that every SMS was delivered.\n\nRestart/force-stop never auto-resends. Unknown or partially sent messages need manual review before creating another test.", 14)
 
+        installMinimalScreen(scroll)
         refreshSims()
         checkIdentityState()
+    }
+
+    private fun dp(value: Int) = (value * resources.displayMetrics.density).toInt()
+
+    private fun installMinimalScreen(scroll: ScrollView) {
+        detailsPanel = layout
+        labPanel = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; visibility = View.GONE }
+        val firstLab = detailsPanel.indexOfChild(permissions)
+        while (detailsPanel.childCount > firstLab) {
+            val child = detailsPanel.getChildAt(firstLab)
+            detailsPanel.removeView(child)
+            labPanel.addView(child)
+        }
+        scroll.removeView(detailsPanel)
+        layout = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(20), dp(20), dp(28))
+            setBackgroundColor(Color.rgb(243, 247, 249))
+        }
+        scroll.addView(layout)
+        text("BULKTEXT", 14).setTextColor(Color.rgb(48, 107, 101))
+        text("Your SMS gateway", 28)
+        text("Connect this phone once. Manage campaigns from BulkText Web.", 16)
+        minimalConnection = text("Connection: checking…", 17)
+        minimalSim = text("Sending SIM: checking…", 17)
+        minimalStatus = text("Needs setup", 20).apply {
+            setPadding(dp(16), dp(16), dp(16), dp(16))
+            background = GradientDrawable().apply { setColor(Color.WHITE); cornerRadius = dp(16).toFloat() }
+            accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE
+        }
+        fun move(view: View) { (view.parent as? ViewGroup)?.removeView(view); layout.addView(view) }
+        move(pairingCodeInput)
+        move(pairBtn)
+        pairBtn.minHeight = dp(48)
+        setupHint = text("Phone access detects your SIMs. SMS permission lets this phone send your approved campaigns.", 14)
+        setupAction = button("Grant phone & SMS permissions") {
+            if (!Telephony.permitted(this)) grant() else refreshCloudInventory()
+        }
+        minimalToggle = button("Start gateway") { toggleBackgroundGateway(); renderMinimalScreen() }
+        powerAction = button("Setup: review background battery settings") {
+            uxPrefs.edit().putBoolean("powerReviewed", true).apply()
+            showBatteryOptimizationGuidance()
+            renderMinimalScreen()
+        }
+        powerSkip = button("Not now") {
+            uxPrefs.edit().putBoolean("powerReviewed", true).apply()
+            renderMinimalScreen()
+        }
+        button("Diagnostics & settings") {
+            detailsPanel.visibility = if (detailsPanel.visibility == View.VISIBLE) View.GONE else View.VISIBLE
+        }
+        detailsPanel.visibility = View.GONE
+        detailsPanel.setPadding(0, dp(12), 0, dp(12))
+        layout.addView(detailsPanel)
+        val root = layout
+        layout = detailsPanel
+        button("Open / close local SMS test lab") {
+            if (labPanel.visibility == View.VISIBLE) labPanel.visibility = View.GONE
+            else AlertDialog.Builder(this).setTitle("Local SMS test lab")
+                .setMessage("These manual tests use a separate local SIM selection and can incur SIM charges. They are not needed for Web campaigns.")
+                .setNegativeButton("Cancel", null).setPositiveButton("Open lab") { _, _ -> labPanel.visibility = View.VISIBLE }.show()
+        }
+        detailsPanel.addView(labPanel)
+        layout = root
+        text("Gateway ${BuildConfig.VERSION_NAME}", 12)
+    }
+
+    private fun renderMinimalScreen() {
+        if (!::minimalStatus.isInitialized) return
+        val paired = currentState is GatewayIdentityState.Paired
+        val permitted = Telephony.permitted(this)
+        val prefs = app.backgroundGatewayPreferences
+        val device = app.secureCredentialStore.getDeviceId()
+        val unknown = device?.let { app.cloudQueueStore.executionCounts(it).unknown } ?: 0
+        val ready = inventoryState is GatewayInventoryState.Ready &&
+            System.currentTimeMillis() - minimalInventoryAt in 0..90_000L
+        minimalConnection.text = when (currentState) {
+            is GatewayIdentityState.Paired -> "Connection: paired with BulkText"
+            is GatewayIdentityState.Pairing -> "Connection: pairing…"
+            is GatewayIdentityState.Offline -> "Connection: offline — pairing retained"
+            is GatewayIdentityState.CredentialExpired, is GatewayIdentityState.CredentialRejected -> "Connection: pair this phone again"
+            is GatewayIdentityState.Error -> "Connection: needs attention — see diagnostics"
+            else -> "Connection: not paired"
+        }
+        minimalSim.text = when (val state = inventoryState) {
+            is GatewayInventoryState.Ready -> if (ready) "Sending SIM: ${state.binding.carrierName ?: "Carrier"} · SIM ${state.binding.slotIndex + 1}" else "Sending SIM: checking current selection…"
+            is GatewayInventoryState.Missing -> "Sending SIM: selected SIM missing — choose in Web"
+            is GatewayInventoryState.Unbound -> "Sending SIM: choose a SIM in BulkText Web"
+            is GatewayInventoryState.PermissionRequired -> "Sending SIM: phone permission needed"
+            is GatewayInventoryState.Offline -> "Sending SIM: offline — cannot confirm selection"
+            is GatewayInventoryState.Error -> "Sending SIM: unable to sync — see diagnostics"
+            else -> "Sending SIM: waiting for setup / sync"
+        }
+        val label = MinimalGatewayStatus.label(prefs.isEnabled(), paired, permitted, ready,
+            prefs.pausedReason() != null || unknown > 0, device?.let { prefs.operationErrors(it).isNotEmpty() } == true,
+            prefs.activatedAt(), prefs.lastControlCycleAt(), System.currentTimeMillis())
+        minimalStatus.text = label
+        minimalStatus.setTextColor(when {
+            label.startsWith("Active") -> Color.rgb(27, 100, 61)
+            label.startsWith("Needs") || label.startsWith("Sending paused") -> Color.rgb(145, 65, 15)
+            else -> Color.rgb(24, 43, 57)
+        })
+        pairBtn.visibility = if (paired) View.GONE else View.VISIBLE
+        setupHint.visibility = if (permitted) View.GONE else View.VISIBLE
+        setupAction.visibility = if (paired || !permitted) View.VISIBLE else View.GONE
+        setupAction.text = if (!permitted) "Grant phone & SMS permissions" else "Refresh connection & SIM"
+        minimalToggle.text = if (prefs.isEnabled()) "Stop gateway" else "Start gateway"
+        // Stop always remains available, including expired credentials / lost permissions.
+        minimalToggle.isEnabled = prefs.isEnabled() || (paired && permitted)
+        val setupPower = paired && permitted && !uxPrefs.getBoolean("powerReviewed", false)
+        val stalled = prefs.isEnabled() && label == "Needs attention — no recent activity"
+        powerAction.visibility = if (setupPower || stalled) View.VISIBLE else View.GONE
+        powerAction.text = if (stalled) "Background activity delayed: review settings" else "Setup: review background battery settings"
+        powerSkip.visibility = if (setupPower && !stalled) View.VISIBLE else View.GONE
     }
 
     private fun checkIdentityState() {
@@ -205,6 +347,7 @@ class MainActivity : Activity() {
             executor.execute {
                 val state = identityRepo.authenticate()
                 handler.post {
+                    if (isDestroyed) return@post
                     currentState = state
                     renderIdentity()
                     if (state is GatewayIdentityState.Paired) {
@@ -229,9 +372,12 @@ class MainActivity : Activity() {
             val deviceName = "${Build.MANUFACTURER} ${Build.MODEL}"
             val resultState = identityRepo.pair(code, deviceName)
             handler.post {
+                if (isDestroyed) return@post
                 currentState = resultState
                 if (resultState is GatewayIdentityState.Paired) {
                     pairingCodeInput.setText("")
+                    pairingCodeInput.clearFocus()
+                    getSystemService(InputMethodManager::class.java)?.hideSoftInputFromWindow(pairingCodeInput.windowToken, 0)
                     Toast.makeText(this, "Paired successfully", Toast.LENGTH_SHORT).show()
                 }
                 renderIdentity()
@@ -285,8 +431,10 @@ class MainActivity : Activity() {
                 GatewayInventoryState.Error(e.message ?: "Unable to read phone and SIM inventory.")
             }
             handler.post {
+                if (isDestroyed) return@post
                 inventoryReportInFlight = false
                 inventoryState = result
+                minimalInventoryAt = System.currentTimeMillis()
                 if (result is GatewayInventoryState.CredentialRejected) {
                     currentState = GatewayIdentityState.CredentialRejected
                     renderIdentity()
@@ -389,6 +537,7 @@ class MainActivity : Activity() {
                 inventoryProvider.snapshot()
             } catch (e: Exception) {
                 handler.post {
+                    if (isDestroyed) return@post
                     cloudQueueSyncInFlight = false
                     cloudQueueState = CloudQueueState.Error(e.message ?: "Unable to read current SIM inventory.", cloudQueueRepo.countsForCurrentDevice())
                     renderCloudQueue()
@@ -453,6 +602,7 @@ class MainActivity : Activity() {
             try { recoveredThisSync += app.cloudDeliveryRepository.syncRecoveryRequests() } catch (_: Exception) { }
 
             handler.post {
+                if (isDestroyed) return@post
                 cloudQueueSyncInFlight = false
                 inventoryState = refreshedInventory
                 cloudQueueState = queueResult
@@ -754,7 +904,7 @@ class MainActivity : Activity() {
         text = value
         textSize = size.toFloat()
         setTextColor(Color.rgb(24, 43, 57))
-        setPadding(0, 12, 0, 12)
+        setPadding(0, dp(8), 0, dp(8))
         this@MainActivity.layout.addView(this)
     }
 
@@ -769,6 +919,9 @@ class MainActivity : Activity() {
     private fun button(label: String, action: () -> Unit): Button = Button(this).apply {
         text = label
         isAllCaps = false
+        minHeight = dp(48)
+        setTextColor(Color.WHITE)
+        backgroundTintList = android.content.res.ColorStateList.valueOf(Color.rgb(48, 107, 101))
         setOnClickListener { guard(action) }
         this@MainActivity.layout.addView(this)
     }
@@ -834,10 +987,12 @@ class MainActivity : Activity() {
 
     private fun render() {
         if (!::status.isInitialized) return
-        permissions.text = getString(R.string.permission_status, if (Telephony.permitted(this)) "granted" else "required", Build.VERSION.RELEASE, Build.VERSION.SDK_INT)
+        permissions.text = "SMS/phone permission: ${if (Telephony.permitted(this)) "granted" else "required"} • Android ${Build.VERSION.RELEASE} / API ${Build.VERSION.SDK_INT}"
         renderBackgroundGateway()
         renderCloudExecution()
         renderCloudQueue()
+        renderGatewayReliability()
+        renderMinimalScreen()
         val s = store.latest()
         status.text = if (s == null) "No session yet. Grant permissions and preview a small test." else buildString {
             append("Session: ${s.status} • subscription ${s.sub}\n")
@@ -866,20 +1021,149 @@ class MainActivity : Activity() {
         super.onPause()
     }
 
+    override fun onDestroy() {
+        activityForeground = false
+        handler.removeCallbacksAndMessages(null)
+        executor.shutdownNow()
+        super.onDestroy()
+    }
+
     @Deprecated("Platform callback retained to avoid additional dependencies in the lab")
     override fun onActivityResult(request: Int, result: Int, data: Intent?) {
         super.onActivityResult(request, result, data)
         if (request == 20 && result == RESULT_OK) guard {
             val uri = data?.data ?: error("No export location")
             val stream = contentResolver.openOutputStream(uri) ?: error("Unable to open export")
+            val pairedDevice = (currentState as? GatewayIdentityState.Paired)?.deviceId
+            val pm = getSystemService(PowerManager::class.java)
+            val isIgnoringBattery = pm?.isIgnoringBatteryOptimizations(packageName) == true
+            val isPowerSave = pm?.isPowerSaveMode == true
+            val notifGranted = if (Build.VERSION.SDK_INT >= 33) checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED else true
+            val cm = getSystemService(ConnectivityManager::class.java)
+            val activeNet = cm?.activeNetwork
+            val caps = activeNet?.let { cm.getNetworkCapabilities(it) }
+            val netStatus = when {
+                caps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true -> "WiFi"
+                caps?.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) == true -> "Cellular Data"
+                activeNet != null -> "Connected"
+                else -> "Disconnected / Offline"
+            }
+            val prefs = app.backgroundGatewayPreferences
+            val lastCycle = prefs.lastControlCycleAt()
+            val now = System.currentTimeMillis()
+            val cycleHealth = when {
+                !prefs.isEnabled() -> "DISABLED"
+                lastCycle == 0L -> "NOT YET OBSERVED"
+                now - lastCycle <= 2 * 60 * 1000L -> "ACTIVE"
+                now - lastCycle <= 15 * 60 * 1000L -> "RECENT"
+                else -> "STALE"
+            }
+
+            val systemHealthJson = JSONObject()
+                .put("androidVersion", Build.VERSION.RELEASE)
+                .put("sdkInt", Build.VERSION.SDK_INT)
+                .put("manufacturer", Build.MANUFACTURER)
+                .put("model", Build.MODEL)
+                .put("batteryOptimizationIgnored", isIgnoringBattery)
+                .put("powerSaveMode", isPowerSave)
+                .put("networkTransport", netStatus)
+                .put("notificationPermissionGranted", notifGranted)
+                .put("gatewayEnabled", prefs.isEnabled())
+                .put("controlLoopHealth", cycleHealth)
+                .put("lastControlCycleAt", if (lastCycle > 0L) lastCycle else JSONObject.NULL)
+                .put("lastCallbackSyncSuccessAt", if (pairedDevice != null && prefs.operationSuccessAt(pairedDevice, "callbacks") > 0L) prefs.operationSuccessAt(pairedDevice, "callbacks") else JSONObject.NULL)
+                .put("lastRecoverySyncSuccessAt", if (pairedDevice != null && prefs.operationSuccessAt(pairedDevice, "recovery") > 0L) prefs.operationSuccessAt(pairedDevice, "recovery") else JSONObject.NULL)
+
             val combined = JSONObject()
                 .put("version", BuildConfig.VERSION_NAME)
                 .put("exportedAt", System.currentTimeMillis())
+                .put("systemHealth", systemHealthJson)
                 .put("localSmsLab", JSONObject(store.export()))
                 .put("cloudQueue", JSONObject(cloudQueueRepo.diagnosticsForCurrentDevice()))
                 .put("privacy", "Recipient phone numbers, SMS bodies, gateway credentials and Supabase keys are excluded from diagnostics.")
             stream.bufferedWriter().use { it.write(combined.toString(2)) }
             Toast.makeText(this, "Diagnostics exported", Toast.LENGTH_SHORT).show()
         }
+    }
+
+    private fun showBatteryOptimizationGuidance() {
+        val pm = getSystemService(PowerManager::class.java)
+        val isIgnoring = pm?.isIgnoringBatteryOptimizations(packageName) == true
+        val manufacturer = Build.MANUFACTURER.lowercase()
+        val oemNote = when {
+            manufacturer.contains("vivo") -> "\n\nFor vivo (FuntouchOS/OriginOS):\nOpen Settings → Battery → High Background Power Consumption → Enable BulkText."
+            manufacturer.contains("xiaomi") -> "\n\nFor Xiaomi (MIUI/HyperOS):\nOpen Settings → Apps → Manage Apps → BulkText → Auto-start (Enable) & Battery Saver (No Restrictions)."
+            manufacturer.contains("oppo") || manufacturer.contains("realme") -> "\n\nFor OPPO / Realme (ColorOS):\nOpen Settings → Battery → App Battery Management → Allow Foreground & Background Activity."
+            else -> ""
+        }
+        val statusText = if (isIgnoring) "Battery optimization is currently UNRESTRICTED for BulkText." else "Battery optimization is currently OPTIMIZED (may restrict background runs)."
+
+        AlertDialog.Builder(this)
+            .setTitle("Gateway Background Reliability")
+            .setMessage("$statusText\n\nFor continuous SIM gateway polling, background activity should be unrestricted.$oemNote")
+            .setPositiveButton("Review Battery Settings") { _, _ ->
+                try {
+                    startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+                } catch (_: Exception) {
+                    Toast.makeText(this, "Open System Settings → Battery to manage optimizations", Toast.LENGTH_LONG).show()
+                }
+            }
+            .setNeutralButton("App Details / OEM Settings") { _, _ ->
+                try {
+                    val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                        data = Uri.parse("package:$packageName")
+                    }
+                    startActivity(intent)
+                } catch (_: Exception) {
+                    Toast.makeText(this, "Open System Settings to manage app permissions", Toast.LENGTH_LONG).show()
+                }
+            }
+            .setNegativeButton("Close", null)
+            .show()
+    }
+
+    private fun renderGatewayReliability() {
+        if (!::gatewayReliabilityStatus.isInitialized) return
+        val pm = getSystemService(PowerManager::class.java)
+        val isIgnoringBattery = pm?.isIgnoringBatteryOptimizations(packageName) == true
+        val isPowerSave = pm?.isPowerSaveMode == true
+        val notifGranted = if (Build.VERSION.SDK_INT >= 33) checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED else true
+
+        val cm = getSystemService(ConnectivityManager::class.java)
+        val activeNet = cm?.activeNetwork
+        val caps = activeNet?.let { cm.getNetworkCapabilities(it) }
+        val netStatus = when {
+            caps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true -> "WiFi"
+            caps?.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) == true -> "Cellular Data"
+            activeNet != null -> "Connected"
+            else -> "Disconnected / Offline"
+        }
+
+        val prefs = app.backgroundGatewayPreferences
+        val bgEnabled = prefs.isEnabled()
+        val lastCycle = prefs.lastControlCycleAt()
+        val now = System.currentTimeMillis()
+        val cycleHealth = when {
+            !bgEnabled -> "DISABLED"
+            lastCycle == 0L -> "NOT YET OBSERVED"
+            now - lastCycle <= 2 * 60 * 1000L -> "ACTIVE (Heartbeat OK)"
+            now - lastCycle <= 15 * 60 * 1000L -> "RECENT (Idle pass)"
+            else -> "STALE (Worker may be paused by OS)"
+        }
+
+        val batteryText = if (isIgnoringBattery) "Unrestricted (Optimizations ignored)" else "Optimized (May delay background runs)"
+        val powerSaveText = if (isPowerSave) "Active (Power Saver Enabled)" else "Normal Mode"
+        val notifText = if (notifGranted) "Granted" else "Required for Visible Gateway Notification"
+        val lastCycleText = if (lastCycle > 0L) DateFormat.getDateTimeInstance().format(Date(lastCycle)) else "not yet"
+
+        gatewayReliabilityStatus.text = buildString {
+            append("Device: ${Build.MANUFACTURER} ${Build.MODEL} (Android ${Build.VERSION.RELEASE}, API ${Build.VERSION.SDK_INT})\n")
+            append("Operator Setting: ${if (bgEnabled) "ENABLED" else "DISABLED"}\n")
+            append("Foreground Control Loop: $cycleHealth (Last cycle: $lastCycleText)\n")
+            append("Battery Optimization: $batteryText\n")
+            append("Power Saver: $powerSaveText • Network: $netStatus\n")
+            append("Notifications: $notifText")
+        }
+        gatewayReliabilityStatus.setTextColor(if (!isIgnoringBattery || isPowerSave || cycleHealth.startsWith("STALE")) Color.rgb(200, 120, 0) else Color.rgb(0, 128, 0))
     }
 }

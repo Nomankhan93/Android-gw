@@ -3,6 +3,7 @@ package com.bulktext.gateway
 import android.content.Context
 
 class BackgroundGatewayPreferences(context: Context) {
+    private val appContext = context.applicationContext
     private val prefs = context.getSharedPreferences("bulktext_background_gateway", Context.MODE_PRIVATE)
 
     val submissionGate = CloudSubmissionGate(
@@ -35,6 +36,7 @@ class BackgroundGatewayPreferences(context: Context) {
             .remove(KEY_PAUSED_REASON)
             .putString(KEY_LAST_STATUS, "Sending stopped before the next recipient. In-flight callbacks may still settle.")
             .commit()) { "Could not persist gateway stop state. Try again." }
+        GatewayWatchdogService.cancel(appContext)
     }
 
     fun pause(reason: String) {

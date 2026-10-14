@@ -1,0 +1,15 @@
+CHANGED_FILES_0_18_8.txt
+HANDOFF_0_18_8.md
+PATCH_0_18_8_README.md
+VALIDATION_0_18_8.md
+app/build.gradle.kts
+app/src/main/java/com/bulktext/gateway/AdaptiveGatewayPolling.kt
+app/src/main/java/com/bulktext/gateway/BackgroundGatewayService.kt
+app/src/main/java/com/bulktext/gateway/cloud/CloudException.kt
+app/src/main/java/com/bulktext/gateway/cloud/GatewayRequestCoordinator.kt
+app/src/main/java/com/bulktext/gateway/cloud/SupabaseGatewayApi.kt
+app/src/main/java/com/bulktext/gateway/inventory/GatewayInventoryRepository.kt
+app/src/main/java/com/bulktext/gateway/queue/CloudDeliveryRepository.kt
+app/src/main/java/com/bulktext/gateway/queue/CloudQueueRepository.kt
+app/src/test/java/com/bulktext/gateway/AdaptiveGateway0188Test.kt
+app/src/test/java/com/bulktext/gateway/GatewayInventoryTest.kt

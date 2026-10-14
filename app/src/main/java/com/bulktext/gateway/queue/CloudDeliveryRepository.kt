@@ -12,8 +12,21 @@ class CloudDeliveryRepository(
     private val health: com.bulktext.gateway.BackgroundGatewayPreferences? = null
 ) {
     fun beginAttempt(jobId: String, localAttempt: LocalCloudAttempt): GatewayAttemptStart = tracked("begin") { beginAttemptInternal(jobId, localAttempt) }
+    @Synchronized
     fun flushEvents(limit: Int = 25): Int = tracked("callbacks") { flushEventsInternal(limit) }
-    fun syncRecoveryRequests(limit: Int = 25): Int = tracked("recovery") { syncRecoveryRequestsInternal(limit) }
+    private var recoveryIdentity: Pair<String?, String?>? = null
+    private var recoveryAt = Long.MIN_VALUE
+    @Synchronized
+    fun syncRecoveryRequests(limit: Int = 25, force: Boolean = false): Int {
+        val identity = credentialStore.getDeviceId() to credentialStore.getCredential()
+        val now = System.nanoTime() / 1_000_000
+        // A recent successful pass already applied recovery locally. Never share failures.
+        if (!force && identity == recoveryIdentity && recoveryAt != Long.MIN_VALUE && now - recoveryAt in 0..999) return 0
+        val result = tracked("recovery") { syncRecoveryRequestsInternal(limit) }
+        recoveryIdentity = identity
+        recoveryAt = System.nanoTime() / 1_000_000
+        return result
+    }
 
     private fun <T> tracked(operation: String, action: () -> T): T {
         val device = credentialStore.getDeviceId()

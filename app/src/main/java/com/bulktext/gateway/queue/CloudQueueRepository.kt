@@ -18,6 +18,7 @@ class CloudQueueRepository(
 
     fun diagnosticsForCurrentDevice(): String = localStore.exportDiagnostics(credentialStore.getDeviceId())
 
+    @Synchronized
     fun sync(identity: CloudQueueExecutionIdentity, limit: Int = 20): CloudQueueState {
         val deviceId = credentialStore.getDeviceId()
             ?: return CloudQueueState.Error("Pair this phone before syncing cloud jobs.", CloudQueueCounts(0, 0, 0, null))

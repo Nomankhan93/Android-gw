@@ -9,16 +9,33 @@ import com.bulktext.gateway.identity.CredentialStore
 
 class GatewayInventoryRepository(
     private val credentialStore: CredentialStore,
-    private val api: GatewayInventoryApi
+    private val api: GatewayInventoryApi,
+    private val clock: () -> Long = { System.nanoTime() / 1_000_000 }
 ) {
-    fun report(inventory: DeviceInventorySnapshot): GatewayInventoryState {
+    private var cachedIdentity: Pair<String, String>? = null
+    private var cachedSnapshot: DeviceInventorySnapshot? = null
+    private var cachedReady: GatewayInventoryState.Ready? = null
+    private var cachedAt = 0L
+
+    @Synchronized
+    fun report(inventory: DeviceInventorySnapshot, allowRecent: Boolean = false): GatewayInventoryState {
         val deviceId = credentialStore.getDeviceId() ?: return GatewayInventoryState.Unpaired
         val credential = credentialStore.getCredential() ?: return GatewayInventoryState.Unpaired
         if (credential.isBlank()) return GatewayInventoryState.Unpaired
 
+        val identity = deviceId to credential
+        val now = clock()
+        if (allowRecent && identity == cachedIdentity && inventory == cachedSnapshot && now - cachedAt in 0 until 60_000L)
+            cachedReady?.let { return it }
+        cachedReady = null
         return try {
             val result = api.reportGatewayDeviceInventory(deviceId, credential, inventory)
-            toState(result, inventory)
+            toState(result, inventory).also { state ->
+                if (state is GatewayInventoryState.Ready) {
+                    cachedIdentity = identity; cachedSnapshot = inventory; cachedReady = state
+                    cachedAt = clock()
+                }
+            }
         } catch (_: CloudException.NetworkException) {
             GatewayInventoryState.Offline
         } catch (_: CloudException.CredentialRejectedException) {

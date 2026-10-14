@@ -24,6 +24,7 @@ class BackgroundGatewayService : Service() {
     private val app get() = application as GatewayApp
     @Volatile private var workerRunning = false
     @Volatile private var stopping = false
+    private val polling = AdaptiveGatewayPolling()
 
     override fun onBind(intent: Intent?) = null
 
@@ -53,7 +54,13 @@ class BackgroundGatewayService : Service() {
                     // Keep the service alive and retry on the next bounded cycle.
                     updateStatus("Gateway sync will retry automatically (${e.javaClass.simpleName}).")
                 }
-                var remaining = BackgroundGatewayPolicy.POLL_INTERVAL_MS
+                val active = try {
+                    val device = app.secureCredentialStore.getDeviceId()
+                    val counts = device?.let { app.cloudQueueStore.executionCounts(it) }
+                    counts == null || counts.ready > 0 || counts.submitting > 0 || counts.submitted > 0 || counts.prepared > 0 || counts.unknown > 0 ||
+                        (device != null && app.cloudQueueStore.pendingAttemptEvents(device, 1).isNotEmpty())
+                } catch (_: Exception) { true }
+                var remaining = polling.nextDelay(active)
                 while (!stopping && remaining > 0L) {
                     val slice = minOf(1_000L, remaining)
                     Thread.sleep(slice)
@@ -101,7 +108,7 @@ class BackgroundGatewayService : Service() {
         if (app.inventoryProvider.canReadSims() && Telephony.permitted(this)) {
             try {
                 val snapshot = app.inventoryProvider.snapshot()
-                val inventory = app.inventoryRepository.report(snapshot)
+                val inventory = app.inventoryRepository.report(snapshot, allowRecent = execution.ready == 0 && execution.submitting == 0 && execution.submitted == 0 && execution.prepared == 0 && execution.unknown == 0)
                 val ready = inventory as? GatewayInventoryState.Ready
                 if (ready != null) {
                     val binding = ready.binding
@@ -135,14 +142,6 @@ class BackgroundGatewayService : Service() {
             updateStatus("Waiting: SMS/phone permission is required before background queue sync.")
         }
 
-        // Re-sync recovery requests to catch any race conditions before execution decision
-        try {
-            app.cloudDeliveryRepository.syncRecoveryRequests()
-            prefs.markRecoverySync()
-        } catch (_: Exception) {
-            updateStatus("Waiting for network to confirm recovery before any retry can execute.")
-        }
-
         if (prefs.operationError(deviceId, "callbacks") != null || prefs.operationError(deviceId, "recovery") != null) {
             updateStatus("Cloud sync needs attention. Pending events retained; new SMS submission waiting.")
             return
@@ -163,6 +162,11 @@ class BackgroundGatewayService : Service() {
         val next = app.cloudQueueStore.nextReadySince(deviceId, activatedAt)
         if (next == null) { updateStatus("Gateway active • waiting for Web-authorized campaigns"); return }
 
+        // Preserve the recovery check at the execution boundary, not on empty cycles.
+        try { app.cloudDeliveryRepository.syncRecoveryRequests(force = true) } catch (_: Exception) {
+            updateStatus("Waiting for recovery confirmation before execution."); return
+        }
+        if (app.cloudQueueStore.executionCounts(deviceId).unknown > 0) return
         if (stopping || !prefs.submissionGate.isAllowed(permit)) return
         updateStatus("Gateway active • preparing campaign ${next.campaignId.take(8)}…")
         try {

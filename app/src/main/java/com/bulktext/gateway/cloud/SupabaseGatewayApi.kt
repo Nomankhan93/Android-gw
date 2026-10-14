@@ -457,7 +457,17 @@ class SupabaseGatewayApi(
         if (supabaseKey.isBlank() || supabaseKey == "placeholder-key") throw CloudException.ConfigurationException("BulkText cloud anon key is not configured.")
     }
 
+    private val requests = GatewayRequestCoordinator()
+
     private fun postRpc(endpointName: String, body: JSONObject): String {
+        // Hash identity: never retain raw credentials in coordinator keys or diagnostics.
+        val identity = java.security.MessageDigest.getInstance("SHA-256").digest(
+            (body.optString("p_device_id") + ":" + body.optString("p_credential") + ":" + body.optString("p_current_credential")).toByteArray()
+        ).joinToString("") { "%02x".format(it) }
+        return requests.execute(identity, endpointName) { postRpcUncoordinated(endpointName, body) }
+    }
+
+    private fun postRpcUncoordinated(endpointName: String, body: JSONObject): String {
         ensureConfigured()
         val baseUrl = supabaseUrl.trim().trimEnd('/')
         val url = URL("$baseUrl/rest/v1/rpc/$endpointName")
@@ -487,6 +497,7 @@ class SupabaseGatewayApi(
             conn.disconnect()
             throw CloudException.NetworkException("Network error while reading response", e)
         }
+        val retryAfter = GatewayRequestCoordinator.retryAfter(conn.getHeaderField("Retry-After"))
         val inputStream = if (statusCode in 200..299) conn.inputStream else conn.errorStream
         val responseString = try {
             if (inputStream == null) "" else BufferedReader(InputStreamReader(inputStream, Charsets.UTF_8)).use { it.readText() }
@@ -495,7 +506,12 @@ class SupabaseGatewayApi(
         } finally {
             conn.disconnect()
         }
-        if (statusCode !in 200..299) throw classifyApiError(endpointName, statusCode, responseString)
+        if (statusCode !in 200..299) {
+            val failure = classifyApiError(endpointName, statusCode, responseString)
+            if (failure is CloudException.HttpException)
+                throw CloudException.HttpException(failure.statusCode, failure.message ?: "Cloud request failed", retryAfter)
+            throw failure
+        }
         if (responseString.isBlank()) throw CloudException.ServerContractException("Server returned an empty successful response")
         return responseString
     }

@@ -157,6 +157,40 @@ class GatewayInventoryTest {
         assertTrue(a.matches(Regex("^[0-9a-f]{64}$")))
     }
 
+    @Test
+    fun idleCacheExpiresAndPreSendAlwaysRefreshesBinding() {
+        var now = 0L
+        val store = FakeCredentialStore("dev-1", "credential")
+        val api = FakeInventoryApi().apply { result = report(BindingStatus.READY, 22, 1) }
+        val repo = GatewayInventoryRepository(store, api, { now })
+        assertTrue(repo.report(inventory, allowRecent = true) is GatewayInventoryState.Ready)
+        api.result = report(BindingStatus.UNBOUND)
+        now = 59999
+        assertTrue(repo.report(inventory, allowRecent = true) is GatewayInventoryState.Ready)
+        assertTrue(repo.report(inventory) is GatewayInventoryState.Unbound)
+        assertTrue(repo.report(inventory, allowRecent = true) is GatewayInventoryState.Unbound)
+        api.result = report(BindingStatus.READY, 22, 1)
+        repo.report(inventory)
+        now += 60000
+        api.result = report(BindingStatus.UNBOUND)
+        assertTrue(repo.report(inventory, allowRecent = true) is GatewayInventoryState.Unbound)
+    }
+
+    @Test
+    fun changedSnapshotAndCredentialInvalidateIdleCache() {
+        val store = FakeCredentialStore("dev-1", "first")
+        val api = FakeInventoryApi().apply { result = report(BindingStatus.READY, 22, 1) }
+        val repo = GatewayInventoryRepository(store, api, { 0L })
+        repo.report(inventory)
+        api.result = report(BindingStatus.UNBOUND)
+        assertTrue(repo.report(inventory.copy(sims = emptyList()), allowRecent = true) is GatewayInventoryState.Unbound)
+        api.result = report(BindingStatus.READY, 22, 1)
+        repo.report(inventory)
+        store.saveCredential("dev-1", "second", 2, Long.MAX_VALUE, "Phone")
+        api.rejected = true
+        assertEquals(GatewayInventoryState.CredentialRejected, repo.report(inventory, allowRecent = true))
+    }
+
     private fun report(status: BindingStatus, sub: Int? = null, slot: Int? = null) = InventoryReportResult(
         deviceId = "dev-1",
         organizationId = "org-1",

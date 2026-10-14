@@ -9,5 +9,5 @@ sealed class CloudException(message: String, cause: Throwable? = null) : Excepti
     class QueueLeaseConflictException(message: String = "Cloud queue lease changed on the server.") : CloudException(message)
     class QueueBlockedException(message: String) : CloudException(message)
     class ServerContractException(message: String) : CloudException(message)
-    class HttpException(val statusCode: Int, safeMessage: String) : CloudException(safeMessage)
+    class HttpException(val statusCode: Int, safeMessage: String, val retryAfterMs: Long = 0L) : CloudException(safeMessage)
 }

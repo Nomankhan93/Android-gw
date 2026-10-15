@@ -1,0 +1,7 @@
+CHANGED_FILES_0_18_8_R1.txt
+HANDOFF_0_18_8_R1.md
+PATCH_0_18_8_R1_README.md
+VALIDATION_0_18_8_R1.md
+app/build.gradle.kts
+app/src/main/java/com/bulktext/gateway/MainActivity.kt
+app/src/test/java/com/bulktext/gateway/GatewayInventoryTest.kt

@@ -76,7 +76,7 @@ class MainActivity : Activity() {
     private val autoSync = object : Runnable {
         override fun run() {
             if (!activityForeground) return
-            refreshCloudInventory()
+            refreshCloudInventory(allowRecent = true)
             maybeAutoSyncCloudQueue()
             if (activityForeground) handler.postDelayed(this, 30_000)
         }
@@ -408,7 +408,7 @@ class MainActivity : Activity() {
             .show()
     }
 
-    private fun refreshCloudInventory() {
+    private fun refreshCloudInventory(allowRecent: Boolean = false) {
         if (!::cloudSimStatus.isInitialized || inventoryReportInFlight) return
         if (currentState !is GatewayIdentityState.Paired) {
             inventoryState = GatewayInventoryState.Unpaired
@@ -426,7 +426,9 @@ class MainActivity : Activity() {
         renderCloudInventory()
         executor.execute {
             val result = try {
-                inventoryRepo.report(inventoryProvider.snapshot())
+                // Automatic UI refresh shares the bounded inventory cache.
+                // Manual refresh and all execution checks retain fresh reports.
+                inventoryRepo.report(inventoryProvider.snapshot(), allowRecent = allowRecent)
             } catch (e: Exception) {
                 GatewayInventoryState.Error(e.message ?: "Unable to read phone and SIM inventory.")
             }

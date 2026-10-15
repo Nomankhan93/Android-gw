@@ -191,6 +191,38 @@ class GatewayInventoryTest {
         assertEquals(GatewayInventoryState.CredentialRejected, repo.report(inventory, allowRecent = true))
     }
 
+    @Test
+    fun automaticForegroundRefreshSharesBackgroundFreshnessWithoutExtendingExpiry() {
+        var now = 0L
+        val api = FakeInventoryApi().apply { result = report(BindingStatus.READY, 22, 1) }
+        val repo = GatewayInventoryRepository(FakeCredentialStore("dev-1", "credential"), api, { now })
+        repo.report(inventory, allowRecent = true) // background report
+        now = 30000
+        repo.report(inventory, allowRecent = true) // foreground timer
+        now = 59999
+        repo.report(inventory, allowRecent = true) // another automatic caller
+        assertEquals(1, api.calls)
+        now = 60000
+        repo.report(inventory, allowRecent = true)
+        assertEquals(2, api.calls) // cache hits did not postpone the heartbeat
+        repo.report(inventory) // explicit refresh / pre-send check
+        assertEquals(3, api.calls)
+    }
+
+    @Test
+    fun automaticRefreshNeverReusesAnErrorOrChangedSimSnapshot() {
+        val api = FakeInventoryApi().apply { result = report(BindingStatus.READY, 22, 1) }
+        val repo = GatewayInventoryRepository(FakeCredentialStore("dev-1", "credential"), api, { 0L })
+        repo.report(inventory, allowRecent = true)
+        api.networkError = true
+        assertEquals(GatewayInventoryState.Offline, repo.report(inventory))
+        api.networkError = false
+        repo.report(inventory, allowRecent = true)
+        assertEquals(3, api.calls) // failed refresh invalidates the old ready result
+        repo.report(inventory.copy(sims = inventory.sims.take(1)), allowRecent = true)
+        assertEquals(4, api.calls)
+    }
+
     private fun report(status: BindingStatus, sub: Int? = null, slot: Int? = null) = InventoryReportResult(
         deviceId = "dev-1",
         organizationId = "org-1",
@@ -204,9 +236,11 @@ class GatewayInventoryTest {
 
     private class FakeInventoryApi : GatewayInventoryApi {
         var result: InventoryReportResult = InventoryReportResult("dev-1", "org-1", 1L, null, null, null, null, BindingStatus.UNBOUND)
+        var calls = 0
         var networkError = false
         var rejected = false
         override fun reportGatewayDeviceInventory(deviceId: String, credential: String, inventory: DeviceInventorySnapshot): InventoryReportResult {
+            calls++
             if (networkError) throw CloudException.NetworkException("offline")
             if (rejected) throw CloudException.CredentialRejectedException()
             return result

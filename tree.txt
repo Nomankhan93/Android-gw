@@ -1,0 +1,178 @@
+bulktext-android-0.6.0-ready/
+├── app
+│   ├── src
+│   │   ├── main
+│   │   │   ├── java
+│   │   │   │   └── com
+│   │   │   │       └── bulktext
+│   │   │   │           └── gateway
+│   │   │   │               ├── cloud
+│   │   │   │               │   ├── CloudException.kt
+│   │   │   │               │   ├── GatewayApi.kt
+│   │   │   │               │   ├── GatewayApiModels.kt
+│   │   │   │               │   ├── GatewayDeliveryApi.kt
+│   │   │   │               │   ├── GatewayDeliveryModels.kt
+│   │   │   │               │   ├── GatewayInventoryApi.kt
+│   │   │   │               │   ├── GatewayInventoryModels.kt
+│   │   │   │               │   ├── GatewayQueueApi.kt
+│   │   │   │               │   ├── GatewayQueueModels.kt
+│   │   │   │               │   ├── GatewayRequestCoordinator.kt
+│   │   │   │               │   └── SupabaseGatewayApi.kt
+│   │   │   │               ├── identity
+│   │   │   │               │   ├── CredentialStore.kt
+│   │   │   │               │   ├── GatewayIdentityRepository.kt
+│   │   │   │               │   ├── GatewayIdentityState.kt
+│   │   │   │               │   ├── InstallationIdProvider.kt
+│   │   │   │               │   ├── InstallationIdStore.kt
+│   │   │   │               │   └── SecureCredentialStore.kt
+│   │   │   │               ├── inventory
+│   │   │   │               │   ├── AndroidDeviceInventoryProvider.kt
+│   │   │   │               │   ├── GatewayInventoryRepository.kt
+│   │   │   │               │   ├── GatewayInventoryState.kt
+│   │   │   │               │   └── SimIdentityHasher.kt
+│   │   │   │               ├── queue
+│   │   │   │               │   ├── CloudAttemptModels.kt
+│   │   │   │               │   ├── CloudDeliveryRepository.kt
+│   │   │   │               │   ├── CloudExecutionModels.kt
+│   │   │   │               │   ├── CloudExecutionStore.kt
+│   │   │   │               │   ├── CloudJobReconciler.kt
+│   │   │   │               │   ├── CloudQueueLocalStore.kt
+│   │   │   │               │   ├── CloudQueueRepository.kt
+│   │   │   │               │   ├── CloudQueueState.kt
+│   │   │   │               │   └── SQLiteCloudQueueStore.kt
+│   │   │   │               ├── AdaptiveGatewayPolling.kt
+│   │   │   │               ├── BackgroundGatewayPolicy.kt
+│   │   │   │               ├── BackgroundGatewayPreferences.kt
+│   │   │   │               ├── BackgroundGatewayService.kt
+│   │   │   │               ├── CallbackSyncService.kt
+│   │   │   │               ├── CloudCallbackPolicy.kt
+│   │   │   │               ├── CloudSendingService.kt
+│   │   │   │               ├── CloudSmsResultReceiver.kt
+│   │   │   │               ├── CloudSubmissionGate.kt
+│   │   │   │               ├── DeliveryEvidence.kt
+│   │   │   │               ├── GatewayApp.kt
+│   │   │   │               ├── GatewayBootReceiver.kt
+│   │   │   │               ├── GatewayWatchdogPass.kt
+│   │   │   │               ├── GatewayWatchdogService.kt
+│   │   │   │               ├── MainActivity.kt
+│   │   │   │               ├── MinimalGatewayStatus.kt
+│   │   │   │               ├── Policy.java
+│   │   │   │               ├── SendingService.kt
+│   │   │   │               ├── SmsResultReceiver.kt
+│   │   │   │               ├── Store.kt
+│   │   │   │               └── Telephony.kt
+│   │   │   ├── res
+│   │   │   │   ├── drawable
+│   │   │   │   │   └── ic_launcher.xml
+│   │   │   │   ├── values
+│   │   │   │   │   ├── ids.xml
+│   │   │   │   │   ├── strings.xml
+│   │   │   │   │   └── styles.xml
+│   │   │   │   └── xml
+│   │   │   │       └── data_extraction_rules.xml
+│   │   │   └── AndroidManifest.xml
+│   │   └── test
+│   │       └── java
+│   │           └── com
+│   │               └── bulktext
+│   │                   └── gateway
+│   │                       ├── AdaptiveGateway0188Test.kt
+│   │                       ├── CloudCallbackLifecycleTest.kt
+│   │                       ├── CloudDeliveryEvidenceTest.kt
+│   │                       ├── CloudSubmissionGateTest.kt
+│   │                       ├── GatewayCloudExecutionTest.kt
+│   │                       ├── GatewayContractV2Test.kt
+│   │                       ├── GatewayDeliveryTest.kt
+│   │                       ├── GatewayIdentityTest.kt
+│   │                       ├── GatewayInventoryTest.kt
+│   │                       ├── GatewayQueueTest.kt
+│   │                       ├── GatewayRpcResponseR1Test.kt
+│   │                       ├── MinimalGatewayUxTest.kt
+│   │                       ├── RecoveryContract0185Test.kt
+│   │                       ├── ReliabilityContract0186Test.kt
+│   │                       └── WatchdogLifecycle0186R1Test.kt
+│   └── build.gradle.kts
+├── docs
+│   ├── web-0.16-contract
+│   │   ├── 20261001000320_durable_cloud_queue.sql
+│   │   ├── HANDOFF.md
+│   │   └── PATCH_README.md
+│   ├── web-0.18.5-contract
+│   │   └── DELIVERY_RECOVERY_CONTRACT_0185.md
+│   ├── ARCHITECTURE.md
+│   ├── DEVELOPMENT_HANDOFF.md
+│   ├── DEVICE_TEST_MATRIX.md
+│   └── FEASIBILITY_DECISIONS.md
+├── gradle
+│   ├── wrapper
+│   │   ├── gradle-wrapper.jar
+│   │   └── gradle-wrapper.properties
+│   └── gradle-daemon-jvm.properties
+├── scripts
+│   ├── build.sh
+│   ├── create_clean_zip.py
+│   ├── generate_tree.py
+│   ├── install.sh
+│   ├── regenerate-sha256.sh
+│   ├── source-checksums.py
+│   ├── source-validate.sh
+│   ├── test-background-gateway-core.sh
+│   ├── test-cloud-execution-core.sh
+│   ├── test-core.sh
+│   ├── test-queue-core.sh
+│   ├── validate-release.ps1
+│   ├── validate-release.sh
+│   ├── validate-source-contracts.py
+│   └── verify-release-metadata.py
+├── tests
+│   ├── BackgroundGatewayCoreTest.kt
+│   ├── CloudExecutionCoreTest.kt
+│   ├── PolicyTest.java
+│   └── QueueCoreTest.kt
+├── (normalized)
+├── .gitignore
+├── .patch-0188.lock
+├── build.gradle.kts
+├── CHANGED_FILES_0_18_8.txt
+├── CHANGED_FILES_0_18_8_R1.txt
+├── gradle.properties
+├── gradlew
+├── gradlew.bat
+├── HANDOFF_0_18_8.md
+├── HANDOFF_0_18_8_R1.md
+├── local.properties.example
+├── PATCH_0_17_0_README.md
+├── PATCH_0_17_1_README.md
+├── PATCH_0_17_2_README.md
+├── PATCH_0_18_0_README.md
+├── PATCH_0_18_1_README.md
+├── PATCH_0_18_2_README.md
+├── PATCH_0_18_3_README.md
+├── PATCH_0_18_4_README.md
+├── PATCH_0_18_5_R1_README.md
+├── PATCH_0_18_5_README.md
+├── PATCH_0_18_6_R1_README.md
+├── PATCH_0_18_6_README.md
+├── PATCH_0_18_7_README.md
+├── PATCH_0_18_8_R1_README.md
+├── PATCH_0_18_8_README.md
+├── PATCH_0_4_1_README.md
+├── PATCH_0_5_0_README.md
+├── PATCH_0_6_0_README.md
+├── PATCH_0_6_1_README.md
+├── README.md
+├── settings.gradle.kts
+├── SHA256SUMS.txt
+├── ubprocess
+├── VALIDATION_0_18_1.md
+├── VALIDATION_0_18_2.md
+├── VALIDATION_0_18_3.md
+├── VALIDATION_0_18_4.md
+├── VALIDATION_0_18_5.md
+├── VALIDATION_0_18_5_R1.md
+├── VALIDATION_0_18_6.md
+├── VALIDATION_0_18_6_R1.md
+├── VALIDATION_0_18_7.md
+├── VALIDATION_0_18_8.md
+├── VALIDATION_0_18_8_R1.md
+└── VALIDATION_RESULTS.md
